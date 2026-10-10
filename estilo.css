@@ -1,0 +1,161 @@
+/* Estilo de la app. Parte de scripts/plantilla/estilo.css (colores, chip, tarjeta, compra), en grande y para el móvil. */
+:root {
+  --tinta: #1f2a24; --suave: #5f6b63; --linea: #e4e1d9; --fondo: #ffffff; --tarjeta: #faf9f5;
+  --verde: #2e5e3e; --verde-claro: #e8f1ea; --aviso: #9a5b00; --aviso-claro: #fdf3e2; --rojo: #a33a2c;
+  --gris-toma: #f1f0ec; --barra: 64px;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --tinta: #e8ece9; --suave: #a3ada6; --linea: #2f3631; --fondo: #141815; --tarjeta: #1c211d;
+          --verde: #8fc79f; --verde-claro: #223027; --aviso: #f0b35a; --aviso-claro: #2e2618; --rojo: #f08b7d;
+          --gris-toma: #191d1a; }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { background: var(--fondo); }
+body { margin: 0; color: var(--tinta); background: var(--fondo);
+       font: 18px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button { font: inherit; color: inherit; cursor: pointer; }
+h1, h2, h3 { margin: 0; }
+
+/* Cabecera */
+#cab { position: sticky; top: 0; z-index: 5; background: var(--fondo); border-bottom: 1px solid var(--linea);
+       padding: calc(env(safe-area-inset-top) + 8px) 16px 8px; }
+#cab .fila { max-width: 1100px; margin: 0 auto; display: flex; align-items: center; gap: 8px; min-height: 44px; }
+#cab h1 { flex: 1; font-size: 21px; color: var(--verde); text-align: center; line-height: 1.2; }
+#cab h1 small { display: block; font-size: 14px; font-weight: 400; color: var(--suave); }
+.flecha { width: 44px; height: 44px; border: 1px solid var(--linea); border-radius: 12px; background: var(--tarjeta);
+          font-size: 24px; line-height: 1; display: grid; place-items: center; }
+.flecha:disabled { opacity: .3; cursor: default; }
+.flecha.vacia { visibility: hidden; }
+
+main { max-width: 1100px; margin: 0 auto; padding: 12px 16px calc(var(--barra) + env(safe-area-inset-bottom) + 24px); }
+
+/* Pestañas abajo */
+#tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; background: var(--fondo);
+        border-top: 1px solid var(--linea); padding-bottom: env(safe-area-inset-bottom); }
+#tabs a { flex: 1; min-height: var(--barra); display: flex; flex-direction: column; align-items: center;
+          justify-content: center; gap: 2px; color: var(--suave); text-decoration: none; font-size: 14px; font-weight: 600; }
+#tabs a svg { width: 26px; height: 26px; }
+#tabs a.activa { color: var(--verde); }
+
+/* Tomas: una tarjeta por plato (principal, acompañamiento, pan, postre) */
+.tomas { display: grid; gap: 22px; }
+.toma { display: flex; flex-direction: column; gap: 8px; }
+.tarjeta { background: var(--tarjeta); border: 1px solid var(--linea); border-radius: 14px; padding: 14px; }
+.toma .cabeza { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.etiqueta { font-size: 14px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--verde); }
+.items { display: grid; gap: 8px; }
+.item { display: block; width: 100%; text-align: left; padding: 10px 14px; }
+.item .rol { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--suave);
+             text-transform: uppercase; letter-spacing: .3px; }
+.item .rol .chip { text-transform: none; letter-spacing: 0; }
+.item .nombre { display: block; font-size: 18px; font-weight: 700; line-height: 1.25; margin: 2px 0 6px; }
+.item .nombre::after { content: " ›"; color: var(--suave); font-weight: 400; }
+.item.principal { padding: 14px; }
+.item.principal .nombre { font-size: 21px; }
+.item .raciones { display: flex; flex-wrap: wrap; gap: 4px 6px; font-size: 15px; }
+.rac { background: var(--fondo); border: 1px solid var(--linea); border-radius: 8px; padding: 2px 8px; }
+.rac b { font-weight: 600; }
+.item .kcal { display: block; font-size: 14px; color: var(--suave); margin-top: 6px; }
+.item.pie-toma { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 15px; color: var(--suave); }
+.enlace { background: none; border: 1px solid var(--linea); border-radius: 20px; padding: 4px 12px; min-height: 38px;
+          color: var(--verde); font-weight: 600; font-size: 15px; white-space: nowrap; }
+.fijos { font-size: 15px; color: var(--suave); }
+
+.opcional { background: var(--gris-toma); border-style: dashed; color: var(--suave); padding: 10px 14px; }
+.opcional .etiqueta { color: var(--suave); }
+.opcional .lista { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.opcional button { background: var(--fondo); border: 1px solid var(--linea); border-radius: 20px; padding: 4px 12px;
+                   font-size: 16px; color: var(--suave); min-height: 38px; }
+
+.chip { display: inline-block; font-size: 13px; line-height: 1; padding: 4px 8px; border-radius: 10px;
+        background: var(--verde-claro); color: var(--verde); white-space: nowrap; vertical-align: middle; font-weight: 600; }
+.chip.gris { background: var(--fondo); color: var(--suave); border: 1px solid var(--linea); }
+.chip.aviso { background: var(--aviso-claro); color: var(--aviso); }
+
+/* Interruptor Carlos / Ángela */
+.quien { display: inline-flex; border: 1px solid var(--linea); border-radius: 22px; padding: 2px; background: var(--fondo); }
+.quien button { border: 0; background: none; border-radius: 20px; padding: 6px 12px; min-height: 36px; font-size: 15px;
+                color: var(--suave); font-weight: 600; }
+.quien button.si { background: var(--verde); color: var(--fondo); }
+
+.nota-dia { font-size: 15px; color: var(--suave); margin: 0 0 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.energia { margin-top: 14px; font-size: 16px; color: var(--suave); padding: 10px 14px; border-radius: 12px;
+           border: 1px solid var(--linea); }
+.energia.aviso { background: var(--aviso-claro); color: var(--aviso); border-color: transparent; }
+
+/* Ficha del plato */
+.volver { background: none; border: 0; color: var(--verde); font-weight: 600; padding: 8px 0; min-height: 44px; font-size: 17px; }
+.ficha h2 { font-size: 25px; line-height: 1.2; margin: 4px 0 4px; }
+.ficha .meta { color: var(--suave); font-size: 15px; margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ficha h3 { font-size: 17px; color: var(--verde); margin: 18px 0 6px; }
+.botones { display: flex; gap: 10px; margin: 6px 0 4px; }
+.boton { flex: 1; min-height: 48px; border-radius: 12px; border: 1px solid var(--verde); background: var(--fondo);
+         color: var(--verde); font-weight: 700; font-size: 17px; }
+.boton.lleno { background: var(--verde); color: var(--fondo); }
+.boton.abierto { background: var(--verde-claro); }
+table { width: 100%; border-collapse: collapse; font-size: 16px; }
+th { text-align: left; font-weight: 600; color: var(--suave); border-bottom: 1px solid var(--linea); padding: 6px 4px; font-size: 14px; }
+td { border-bottom: 1px solid var(--linea); padding: 7px 4px; vertical-align: top; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+td.yo, th.yo { font-weight: 700; color: var(--tinta); background: var(--verde-claro); }
+.medida { display: block; font-size: 13px; color: var(--suave); font-weight: 400; }
+ol.pasos { margin: 0; padding-left: 22px; } ol.pasos li { margin-bottom: 6px; }
+ul.mejoras { margin: 0; padding-left: 20px; } ul.mejoras li { margin-bottom: 6px; }
+ul.mejoras span { color: var(--suave); font-size: 15px; }
+.opciones { display: grid; gap: 8px; margin: 10px 0; }
+.opcion { text-align: left; border: 1px solid var(--linea); border-radius: 12px; background: var(--tarjeta); padding: 10px 12px; min-height: 52px; }
+.opcion b { display: block; font-size: 18px; }
+.opcion span { font-size: 14px; color: var(--suave); }
+.opcion.original { border-color: var(--verde); }
+.acomp { font-size: 16px; color: var(--suave); margin: 2px 0; }
+.alt { display: flex; align-items: stretch; border: 1px solid var(--linea); border-radius: 12px; background: var(--tarjeta); overflow: hidden; }
+.alt.original { border-color: var(--verde); }
+.alt-elegir { flex: 1; text-align: left; background: none; border: 0; padding: 10px 12px; min-height: 56px; }
+.alt-elegir b { display: block; font-size: 18px; }
+.alt-elegir > span { font-size: 15px; color: var(--suave); line-height: 1.35; display: block; }
+.ver { border: 0; border-left: 1px solid var(--linea); background: none; color: var(--verde); font-weight: 600; padding: 0 14px; font-size: 15px; }
+
+/* Semana */
+.semana { display: grid; gap: 10px; }
+.dia { text-align: left; width: 100%; display: flex; flex-direction: column; justify-content: flex-start; }
+.dia.hoy { border-color: var(--verde); box-shadow: 0 0 0 1px var(--verde) inset; }
+.dia h3 { font-size: 18px; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
+.dia p { margin: 3px 0; font-size: 16px; display: grid; grid-template-columns: 86px 1fr; gap: 6px; }
+.dia p i { font-style: normal; color: var(--suave); font-size: 14px; padding-top: 2px; }
+
+/* Compra */
+.progreso { color: var(--suave); font-size: 15px; margin: 0 0 10px; }
+.compra section { margin: 0 0 18px; }
+.compra h3 { color: var(--verde); font-size: 17px; margin: 0 0 4px; }
+.compra ul { list-style: none; margin: 0; padding: 0; }
+.compra li button { display: flex; gap: 12px; align-items: flex-start; width: 100%; text-align: left; background: none; border: 0;
+                    border-bottom: 1px solid var(--linea); padding: 8px 2px; min-height: 48px; }
+.caja { flex: 0 0 26px; height: 26px; border: 2px solid var(--suave); border-radius: 6px; margin-top: 1px; display: grid; place-items: center; }
+.compra li.si .caja { background: var(--verde); border-color: var(--verde); }
+.compra li.si .caja::after { content: ""; width: 7px; height: 13px; border: solid var(--fondo); border-width: 0 3px 3px 0; transform: rotate(45deg) translate(-1px, -1px); }
+.compra li.si .txt { text-decoration: line-through; color: var(--suave); }
+.compra .cant { display: block; font-size: 15px; color: var(--suave); }
+.compra .cant em { font-style: normal; color: var(--verde); }
+
+.aviso-semana { background: var(--aviso-claro); color: var(--aviso); padding: 10px 14px; border-radius: 12px; margin: 0 0 12px; font-size: 16px; }
+.vacio { color: var(--suave); text-align: center; padding: 40px 0; }
+.campo { display: block; font-size: 15px; color: var(--suave); margin: 14px 0 6px; }
+.campo input { display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 16px; color: var(--tinta);
+               background: var(--fondo); border: 1px solid var(--linea); border-radius: 10px; padding: 10px 12px; min-height: 46px; }
+#sync-error { color: var(--rojo); }
+
+/* PC: barra arriba, tarjetas en columnas */
+@media (min-width: 900px) {
+  body { font-size: 17px; }
+  #tabs { position: sticky; top: 61px; bottom: auto; border-top: 0; border-bottom: 1px solid var(--linea); justify-content: center; }
+  #tabs a { flex: 0 0 160px; flex-direction: row; gap: 8px; min-height: 48px; font-size: 16px; }
+  #tabs a.activa { box-shadow: 0 -3px 0 var(--verde) inset; }
+  main { padding-bottom: 40px; }
+  .tomas { grid-template-columns: repeat(3, 1fr); align-items: start; }
+  .tomas .opcional { grid-column: span 1; order: 1; }
+  .semana { grid-template-columns: repeat(7, 1fr); gap: 8px; }
+  .dia { padding: 10px; } .dia p { font-size: 14px; display: block; } .dia p i { display: block; min-width: 0; font-size: 12px; }
+  .ficha { max-width: 760px; }
+  .compra { columns: 2 360px; column-gap: 32px; } .compra section { break-inside: avoid; }
+}
