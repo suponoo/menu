@@ -48,35 +48,76 @@ function ponerVarios(pares) {
 }
 
 /* ---------- Modelo: qué se come cada día ---------- */
-const toma = (d, c) => (D.dias[d] || {})[c] || null;
-
 const PERSONAS = () => Object.keys(D.personas);
 
-/* Plato i de la toma para p: cambio propio (c:dia:toma:i:p) > cambio de los dos (c:dia:toma:i) > el del menú. */
+/* Intercambio de días: el día d muestra el menú del día origen(d) (clave c:<día>:orden). Los cambios, lo añadido
+   y las tomas libres van con el menú, porque sus claves usan el día de origen. */
+const origen = (d) => valor(`c:${d}:orden`) || d;
+const toma = (d, c) => (D.dias[origen(d)] || {})[c] || null;
+const esAnadido = (i) => String(i).startsWith("+");
+
+/* Plato i de la toma para p: cambio propio (c:dia:toma:i:p) > cambio de los dos (c:dia:toma:i) > el del menú.
+   Los platos añadidos llevan i = "+<id>". */
 function idDe(d, c, i, p) {
-  return valor(`c:${d}:${c}:${i}:${p}`) || valor(`c:${d}:${c}:${i}`) || toma(d, c).items[i].id;
+  if (esAnadido(i)) return String(i).slice(1);
+  const o = origen(d);
+  return valor(`c:${o}:${c}:${i}:${p}`) || valor(`c:${o}:${c}:${i}`) || toma(d, c).items[i].id;
 }
 
-/* Platos de la toma para p: [{i, id, original, p}]. */
+/* Platos añadidos a la toma: c:<día>:<toma>:+<id> = "carlos,angela" (para quién), en el orden en que se añadieron. */
+function anadidos(d, c) {
+  const pre = `c:${origen(d)}:${c}:+`;
+  return Object.keys(E).filter((k) => k.startsWith(pre) && E[k].v && D.recetas[k.slice(pre.length)])
+    .sort((a, b) => E[a].t - E[b].t)
+    .map((k) => ({ id: k.slice(pre.length), quien: String(E[k].v).split(",") }));
+}
+
+/* Platos de la toma para p: [{i, id, original, p, anadido}]. */
 function itemsDe(d, c, p) {
   const t = toma(d, c);
-  if (!t || !t.items) return [];
-  return t.items.map((it, i) => ({ i, original: it.id, p: it.p, id: idDe(d, c, i, p) }))
-    .filter((it) => it.p === "ambos" || it.p === p);
+  const base = t && t.items ? t.items.map((it, i) => ({ i, original: it.id, p: it.p, id: idDe(d, c, i, p) }))
+    .filter((it) => it.p === "ambos" || it.p === p) : [];
+  return base.concat(anadidos(d, c).filter((a) => a.quien.includes(p))
+    .map((a) => ({ i: "+" + a.id, original: a.id, p, id: a.id, anadido: true })));
 }
-const cambiado = (d, c, i, p) => idDe(d, c, i, p) !== toma(d, c).items[i].id;
+const cambiado = (d, c, i, p) => !esAnadido(i) && idDe(d, c, i, p) !== toma(d, c).items[i].id;
 const nCambiados = (d, c) => ((toma(d, c) || {}).items || [])
   .filter((_, i) => PERSONAS().some((p) => cambiado(d, c, i, p))).length;
 
 /* Toma libre para p: la propia (l:dia:toma:p; "-" = no libre para p) > la de los dos (l:dia:toma) > la del menú. */
 function libreDe(d, c, p) {
-  const vp = valor(`l:${d}:${c}:${p}`);
+  const o = origen(d);
+  const vp = valor(`l:${o}:${c}:${p}`);
   if (vp === "-") return null;
   if (vp) return { nombre: vp, kcal: D.libres[vp] ?? 0 };
-  const v = valor(`l:${d}:${c}`);
+  const v = valor(`l:${o}:${c}`);
   if (v !== undefined) return v ? { nombre: v, kcal: D.libres[v] ?? 0 } : null;
   const t = toma(d, c);
   return t && t.libre && t.libre[p] ? t.libre[p] : null;
+}
+
+/* Batch: el día de batch b cocina los platos de su tramo (hasta el siguiente día de batch) que ocupan el sitio de un
+   plato de batch de la plantilla. Si se cambia, entra el nuevo solo si se puede hacer en batch; si se intercambian
+   días, cada plato va al batch del tramo donde cae. */
+function batchDe(b) {
+  const dias = D.semana.dias;
+  const bs = Object.keys(D.semana.batch).sort((x, y) => dias.indexOf(x) - dias.indexOf(y));
+  const ini = dias.indexOf(b), sig = bs.find((x) => dias.indexOf(x) > ini);
+  const deBatch = new Set(Object.values(D.semana.batch).flat());
+  const out = [];
+  for (const d of dias.slice(ini, sig ? dias.indexOf(sig) : dias.length)) {
+    for (const c of TOMAS) {
+      ((toma(d, c) || {}).items || []).forEach((it, i) => {
+        if (!deBatch.has(it.id)) return;
+        for (const p of PERSONAS()) {
+          if (libreDe(d, c, p) || !(it.p === "ambos" || it.p === p)) continue;
+          const id = idDe(d, c, i, p);
+          if ((id === it.id || D.recetas[id].batch) && !out.includes(id)) out.push(id);
+        }
+      });
+    }
+  }
+  return out;
 }
 
 /* Lo que la otra persona come distinto en esa toma, para avisarlo en la tarjeta. */
@@ -86,6 +127,7 @@ const fijosDe = (c, p) => ((D.semana.fijos[p] || {})[c] || []);
 const idsToma = (d, c, p) => itemsDe(d, c, p).map((x) => x.id);
 
 function rol(id, c) {
+  if (OPCIONALES.includes(c)) return "Tentempié";
   const cl = D.recetas[id].clase;
   return cl === "postre" && c === "desayuno" ? "Fruta" : ROL[cl] || "Plato";
 }
@@ -95,7 +137,6 @@ function kcalDia(d, p) {
   for (const c of ORDEN_DIA) {
     const lib = libreDe(d, c, p);
     if (lib) { k += lib.kcal; continue; }
-    if (!TOMAS.includes(c)) continue;
     for (const id of [...idsToma(d, c, p), ...fijosDe(c, p)]) k += D.recetas[id].kcal[p];
   }
   return k;
@@ -115,7 +156,7 @@ function calcularCompra() {
   const tot = {};
   for (const p of Object.keys(D.personas)) {
     for (const d of D.semana.dias) {
-      for (const c of TOMAS) {
+      for (const c of ORDEN_DIA) {
         if (libreDe(d, c, p)) continue;
         for (const id of [...idsToma(d, c, p), ...fijosDe(c, p)]) {
           for (const [a, g] of D.recetas[id].raciones[p]) {
@@ -221,10 +262,16 @@ function racionesChips(id, p) {
 
 function tarjetaItem(d, c, it) {
   const r = D.recetas[it.id], p = persona, o = otra(p);
-  const t = toma(d, c).items[it.i];
-  const delOtro = (t.p === "ambos" || t.p === o) && !libreDe(d, c, o) ? idDe(d, c, it.i, o) : null;
-  return `<button class="tarjeta item ${r.clase}" data-ir="#item/${d}/${c}/${it.i}">
-    <span class="rol">${rol(it.id, c)}${chipsReceta(it.id, d, c, it.i)}</span>
+  let delOtro = null, marca = "";
+  if (it.anadido) {
+    const solo = !anadidos(d, c).find((a) => a.id === it.id).quien.includes(o);
+    marca = ` <span class="chip aviso">añadido${solo ? ` · solo ${esc(D.personas[p])}` : ""}</span>`;
+  } else {
+    const t = toma(d, c).items[it.i];
+    delOtro = (t.p === "ambos" || t.p === o) && !libreDe(d, c, o) ? idDe(d, c, it.i, o) : null;
+  }
+  return `<button class="tarjeta item ${r.clase}" data-ir="#item/${d}/${c}/${encodeURIComponent(it.i)}">
+    <span class="rol">${rol(it.id, c)}${chipsReceta(it.id, d, c, it.i)}${marca}</span>
     <span class="nombre">${esc(r.corto)}</span>
     <span class="raciones">${racionesChips(it.id, p)}</span>
     <span class="kcal">${Math.round(r.kcal[p])} kcal · ${r.prot[p]} g proteína</span>
@@ -250,7 +297,8 @@ function tarjetaToma(d, c) {
       : '<p class="acomp">Nada previsto.</p>'}</div>
     ${libO ? `<p class="otro-toma">${esc(D.personas[o])}: libre (${esc(libO.nombre)})</p>` : ""}
     <div class="pie-toma"><span>${items.length ? "Total: " + kcalTxt(items.map((x) => x.id), p) : ""}</span>
-      <button class="enlace" data-ir="#libre/${d}/${c}">Toma libre…</button></div>
+      <span class="acciones"><button class="enlace" data-ir="#anadir/${d}/${c}">＋ Añadir</button>
+      <button class="enlace" data-ir="#libre/${d}/${c}">Toma libre…</button></span></div>
     ${fijos.length ? `<div class="fijos">Además, cada día: ${fijos.map((x) => esc(D.recetas[x].corto)).join(" · ")}</div>` : ""}
   </section>`;
 }
@@ -258,27 +306,76 @@ function tarjetaToma(d, c) {
 function tarjetaOpcional(d, c) {
   const lib = libreDe(d, c, persona);
   const ids = D.semana.opcionales[c] || [];
-  if (!ids.length && !lib) return "";
+  const mios = itemsDe(d, c, persona);
   const lista = lib
     ? `<button data-ir="#libre/${d}/${c}">Libre: ${esc(lib.nombre)} · unas ${lib.kcal} kcal</button>`
-    : ids.map((id) => `<button data-ir="#receta/${id}">${esc(D.recetas[id].corto)}</button>`).join("") +
-      `<button data-ir="#libre/${d}/${c}">Libre…</button>`;
-  return `<article class="tarjeta opcional"><span class="etiqueta">${NOMBRE_TOMA[c]} · opcional</span>
+    : ids.filter((id) => !mios.some((x) => x.id === id))
+      .map((id) => `<button data-ir="#receta/${id}">${esc(D.recetas[id].corto)}</button>`).join("") +
+      `<button data-ir="#anadir/${d}/${c}">＋ Añadir</button><button data-ir="#libre/${d}/${c}">Libre…</button>`;
+  return `<article class="tarjeta opcional ${mios.length && !lib ? "con-algo" : ""}"><span class="etiqueta">${NOMBRE_TOMA[c]} · opcional</span>
+    ${lib ? "" : `<div class="items">${mios.map((it) => tarjetaItem(d, c, it)).join("")}</div>`}
     <div class="lista">${lista}</div></article>`;
 }
 
-function avisoEnergia(d) {
-  const p = persona, n = D.personas[p];
-  const k = Math.round(kcalDia(d, p)), obj = D.energia.kcal_dia[p], tol = D.energia.tolerancia;
-  if (k < obj * (1 - tol)) {
-    return `<div class="energia aviso">Día algo corto de energía para ${esc(n)}: unas ${k} de ${obj} kcal. ` +
-      `Si tienes hambre, toma uno de los tentempiés opcionales.</div>`;
+function estadoEnergia(k, p) {
+  const obj = D.energia.kcal_dia[p], tol = D.energia.tolerancia;
+  return k < obj * (1 - tol) ? "corto" : k > obj * (1 + tol) ? "largo" : "dentro";
+}
+
+/* Tentempiés para completar el día de p según sus pautas (03_datos/pautas.json) y, al final, los del menú de la semana:
+   en su orden, que quepan sin pasar del máximo, que no estén ya en el día y sin pasar de las frutas del día. */
+const frutasDia = (d, p) => ORDEN_DIA.flatMap((c) => (libreDe(d, c, p) ? [] : [...idsToma(d, c, p), ...fijosDe(c, p)]))
+  .reduce((n, id) => n + (D.recetas[id].frutas || 0), 0);
+
+function sugerencias(d, p, k, max) {
+  if (D.energia.kcal_dia[p] - k < 50) return [];
+  const delDia = new Set(ORDEN_DIA.flatMap((c) => idsToma(d, c, p)));
+  let frutas = frutasDia(d, p);
+  const out = [];
+  const menu = [...new Set(OPCIONALES.flatMap((c) => D.semana.opcionales[c] || []))];
+  const grupos = [...((D.pautas[p] || {}).sugerencias || []), { motivo: "tentempié del menú de la semana", recetas: menu }];
+  for (const g of grupos) {
+    for (const id of g.recetas) {
+      const r = D.recetas[id];
+      if (out.length >= 3 || delDia.has(id) || out.some((x) => x.id === id) || k + r.kcal[p] > max) continue;
+      if (r.frutas && frutas + r.frutas > D.energia.frutas_max) continue;
+      out.push({ id, motivo: g.motivo });
+      frutas += r.frutas || 0;
+      break;   // una por grupo, para variar
+    }
   }
-  if (k > obj * (1 + tol)) {
-    return `<div class="energia aviso">Día algo largo de energía para ${esc(n)}: unas ${k} de ${obj} kcal. ` +
-      `${esc(D.energia.alta)}.</div>`;
-  }
-  return `<div class="energia">Energía del día de ${esc(n)}: unas ${k} kcal (objetivo ${obj}).</div>`;
+  return out;
+}
+
+function tarjetaEnergia(d) {
+  const tol = D.energia.tolerancia;
+  const filas = PERSONAS().map((p) => {
+    const k = Math.round(kcalDia(d, p)), obj = D.energia.kcal_dia[p];
+    const min = Math.round(obj * (1 - tol)), max = Math.round(obj * (1 + tol));
+    const e = estadoEnergia(k, p), escala = obj * 1.4;
+    const pct = (x) => Math.min(100, (x / escala) * 100);
+    let consejo = "";
+    if (e === "corto") consejo = `Faltan unas ${min - k} kcal para el mínimo (${min}): cabe un tentempié de media mañana o media tarde.`;
+    if (e === "largo") {
+      const anad = TOMAS.flatMap((c) => itemsDe(d, c, p).filter((x) => x.anadido).map((x) => D.recetas[x.id].corto));
+      consejo = `Sobran unas ${k - max} kcal sobre el máximo (${max}): quita ` +
+        (anad.length ? `lo añadido (${anad.join(", ")}), ` : "") + "el pan o el postre de una toma, o baja el aceite.";
+    }
+    const sug = sugerencias(d, p, k, max);
+    const hueco = obj - k;
+    const bloqueSug = sug.length ? `<p class="en-sug-tit">Para completar${hueco > 0 ? ` (unas ${hueco} kcal hasta tu objetivo)` : ""}, según tus pautas:</p>
+      <div class="en-sug">${sug.map(({ id, motivo }) => `<button class="enlace" data-sugerir="${esc(id)}" data-quien="${p}">
+        ＋ ${esc(D.recetas[id].corto)} · ${Math.round(D.recetas[id].kcal[p])} kcal<small>${esc(motivo)}</small></button>`).join("")}</div>` : "";
+    const nota = (D.pautas[p] || {}).nota;
+    return `<div class="en-fila ${e}"><div class="en-cab"><b>${esc(D.personas[p])}</b><span>${k} de ${obj} kcal</span>
+      <span class="chip ${e === "dentro" ? "" : "aviso"}">${e === "dentro" ? "✓ dentro" : e === "corto" ? "se queda corto" : "se pasa"}</span></div>
+      <div class="barra" role="img" aria-label="${k} de ${obj} kcal"><span class="banda" style="left:${pct(min).toFixed(1)}%;width:${(pct(max) - pct(min)).toFixed(1)}%"></span>
+      <span class="relleno" style="width:${pct(k).toFixed(1)}%"></span></div>
+      ${consejo ? `<p class="en-consejo">${esc(consejo)}</p>` : ""}${bloqueSug}
+      ${nota ? `<p class="en-nota">${esc(nota)}</p>` : ""}</div>`;
+  }).join("");
+  return `<section class="tarjeta energia-dia"><div class="en-titulo"><span class="etiqueta">Energía del día</span>
+    <span>objetivo ±${Math.round(tol * 100)} % (banda verde)</span></div>${filas}</section>`;
 }
 
 /* ---------- Vistas ---------- */
@@ -298,12 +395,15 @@ function vistaHoy(d) {
   let aviso = "";
   if (sit === "antes") aviso = `<p class="aviso-semana">Esta semana empieza el ${D.semana.nombre_dia[dias[0]].toLowerCase()} ${fecha(dias[0])}.</p>`;
   if (sit === "despues") aviso = `<p class="aviso-semana">Esta semana ya ha pasado: falta publicar la nueva.</p>`;
-  const batch = D.semana.batch[d];
-  if (batch) notas.push(`<span class="chip gris">Hoy toca batch</span> ${batch.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
+  const batch = D.semana.batch[d] ? batchDe(d) : [];
+  if (batch.length) notas.push(`<span class="chip gris">Hoy toca batch</span> ${batch.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
+  if (origen(d) !== d) notas.push(`<span class="chip aviso">Menú del ${esc(D.semana.nombre_dia[origen(d)].toLowerCase())}</span>`);
   if (Object.values(D.semana.b12).includes(d)) notas.push(`<span class="chip">B12</span> suplemento hoy`);
   const tarjetas = ORDEN_DIA.map((c) => (TOMAS.includes(c) ? tarjetaToma(d, c) : tarjetaOpcional(d, c))).join("");
   return `${aviso}${notas.length ? `<p class="nota-dia">${notas.join(" &nbsp; ")}</p>` : ""}
-    <div class="tomas">${tarjetas}</div>${avisoEnergia(d)}`;
+    ${tarjetaEnergia(d)}
+    <div class="tomas">${tarjetas}</div>
+    <p class="nota-dia" style="margin-top:16px"><button class="enlace" data-ir="#intercambiar/${d}">⇄ Intercambiar el menú de este día…</button></p>`;
 }
 
 function tablaIngredientes(id, solo) {
@@ -363,11 +463,11 @@ function opcionesCambiar(d, c, i) {
 function elegirPlato(d, c, i, id) {
   const orig = toma(d, c).items[i].id;
   if (para === "ambos") {
-    ponerVarios([[`c:${d}:${c}:${i}`, id === orig ? "" : id],
-      ...PERSONAS().filter((p) => valor(`c:${d}:${c}:${i}:${p}`)).map((p) => [`c:${d}:${c}:${i}:${p}`, ""])]);
+    ponerVarios([[`c:${origen(d)}:${c}:${i}`, id === orig ? "" : id],
+      ...PERSONAS().filter((p) => valor(`c:${origen(d)}:${c}:${i}:${p}`)).map((p) => [`c:${origen(d)}:${c}:${i}:${p}`, ""])]);
   } else {
-    const comun = valor(`c:${d}:${c}:${i}`) || orig;
-    poner(`c:${d}:${c}:${i}:${para}`, id === comun ? "" : id);
+    const comun = valor(`c:${origen(d)}:${c}:${i}`) || orig;
+    poner(`c:${origen(d)}:${c}:${i}:${para}`, id === comun ? "" : id);
   }
 }
 
@@ -386,16 +486,17 @@ function opcionesLibre(d, c) {
 
 function elegirLibre(d, c, nombre) {
   if (para === "ambos") {
-    ponerVarios([[`l:${d}:${c}`, nombre],
-      ...PERSONAS().filter((p) => valor(`l:${d}:${c}:${p}`)).map((p) => [`l:${d}:${c}:${p}`, ""])]);
+    ponerVarios([[`l:${origen(d)}:${c}`, nombre],
+      ...PERSONAS().filter((p) => valor(`l:${origen(d)}:${c}:${p}`)).map((p) => [`l:${origen(d)}:${c}:${p}`, ""])]);
   } else {
-    poner(`l:${d}:${c}:${para}`, nombre || "-");
+    poner(`l:${origen(d)}:${c}:${para}`, nombre || "-");
   }
 }
 
 function vistaItem(d, c, i) {
   cabecera(`<button class="flecha" data-volver="#hoy/${d}" aria-label="Volver">‹</button>`,
     NOMBRE_TOMA[c], `${D.semana.nombre_dia[d]} ${fecha(d)}`);
+  if (esAnadido(i)) return fichaAnadido(d, c, String(i).slice(1));
   const t = toma(d, c) && toma(d, c).items && toma(d, c).items[i];
   if (!t) return `<p class="vacio">No está en el menú.</p>`;
   const id = idDe(d, c, i, persona), o = otra(persona);
@@ -412,6 +513,92 @@ function vistaItem(d, c, i) {
     <div class="cabeza" style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
       <h3 style="margin:0">Ingredientes</h3>${interruptor()}</div>
     ${cuerpoReceta(id, distinto ? persona : null)}</div>`;
+}
+
+function fichaAnadido(d, c, id) {
+  const a = anadidos(d, c).find((x) => x.id === id);
+  if (!a) return `<p class="vacio">Ya no está en el menú.</p>`;
+  const r = D.recetas[id];
+  return `<div class="ficha"><span class="chip aviso">añadido</span><h2>${esc(r.nombre)}</h2>
+    <div class="meta">${esc(metaReceta(id))} · para ${esc(a.quien.map((p) => D.personas[p]).join(" y "))}</div>
+    ${selectorPara("Quitar para:")}
+    <div class="botones"><button class="boton" data-quitar="${esc(id)}">Quitar</button></div>
+    <div class="cabeza" style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
+      <h3 style="margin:0">Ingredientes</h3>${interruptor()}</div>
+    ${cuerpoReceta(id, a.quien.length === 1 ? a.quien[0] : null)}</div>`;
+}
+
+function cambiarAnadido(d, c, id, poner_, personas) {
+  const k = `c:${origen(d)}:${c}:+${id}`;
+  const quien = new Set(String(valor(k) || "").split(",").filter(Boolean));
+  (personas || (para === "ambos" ? PERSONAS() : [para])).forEach((p) => (poner_ ? quien.add(p) : quien.delete(p)));
+  poner(k, PERSONAS().filter((p) => quien.has(p)).join(","));
+}
+
+const norm = (t) => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+/* Añadir un plato a la toma: primero lo que acompaña bien a esa toma; cada opción dice cómo queda el día. */
+function vistaAnadir(d, c) {
+  cabecera(`<button class="flecha" data-volver="#hoy/${d}" aria-label="Volver">‹</button>`,
+    `Añadir: ${NOMBRE_TOMA[c].toLowerCase()}`, `${D.semana.nombre_dia[d]} ${fecha(d)}`);
+  const fijos = new Set(PERSONAS().flatMap((p) => Object.values(D.semana.fijos[p] || {}).flat()));
+  const quien = para === "ambos" ? PERSONAS() : [para];
+  const ya = new Set(quien.flatMap((p) => idsToma(d, c, p)));
+  const vale = (r) => (c === "desayuno" ? r.momentos.includes("desayuno") || (r.clase === "postre" && r.tipo === "complemento")
+    : OPCIONALES.includes(c) ? r.momentos.includes(c) || r.tipo === "snack"
+    : r.momentos.some((m) => ["comida", "cena", "media_tarde"].includes(m)));
+  const ids = Object.keys(D.recetas).filter((id) => !id.includes("~") && !fijos.has(id) && !ya.has(id))
+    .sort((a, b) => D.recetas[a].corto.localeCompare(D.recetas[b].corto, "es"));
+  const sugeridos = ids.filter((id) => vale(D.recetas[id]) && (D.recetas[id].clase !== "principal" || OPCIONALES.includes(c)));
+  const otros = ids.filter((id) => !sugeridos.includes(id));
+  const k0 = Object.fromEntries(PERSONAS().map((p) => [p, kcalDia(d, p)]));
+  const fr0 = Object.fromEntries(PERSONAS().map((p) => [p, frutasDia(d, p)]));
+  const fila = (id) => {
+    const r = D.recetas[id];
+    const pred = quien.map((p) => {
+      if (libreDe(d, c, p)) return `${esc(D.personas[p])}: tiene la toma libre`;
+      const k1 = k0[p] + r.kcal[p], e = estadoEnergia(k1, p);
+      return `<span class="${e === "dentro" ? "ok" : "mal"}">${esc(D.personas[p])}: +${Math.round(r.kcal[p])} kcal → ` +
+        `${Math.round(k1)} ${e === "dentro" ? "✓ dentro" : e === "largo" ? "· se pasa" : "· aún corto"}` +
+        (r.frutas && fr0[p] + r.frutas > D.energia.frutas_max ? ` · más de ${D.energia.frutas_max} frutas` : "") + "</span>";
+    }).join("<br>");
+    return `<button class="opcion fila-anadir" data-anadir="${esc(id)}" data-nombre="${esc(norm(r.nombre + " " + r.corto))}">
+      <b>${esc(r.corto)} <span class="chip gris">${rol(id, c)}</span></b><span>${pred}</span></button>`;
+  };
+  return `<div class="ficha">${selectorPara("Añadir para:")}
+    <label class="campo">Buscar<input id="buscar" type="search" autocomplete="off" placeholder="zumo, pan, yogur…"></label>
+    ${sugeridos.length ? `<h3>Para acompañar</h3><div class="opciones">${sugeridos.map(fila).join("")}</div>` : ""}
+    <h3>Otros platos</h3><div class="opciones">${otros.map(fila).join("")}</div></div>`;
+}
+
+/* Intercambiar el menú completo de dos días (para los dos). */
+function vistaIntercambiar(d) {
+  cabecera(`<button class="flecha" data-volver="#hoy/${d}" aria-label="Volver">‹</button>`,
+    "Intercambiar día", `${D.semana.nombre_dia[d]} ${fecha(d)}`);
+  const dias = D.semana.dias, nd = (x) => D.semana.nombre_dia[x].toLowerCase();
+  const resumen = (x) => TOMAS.map((c) => {
+    const lib = libreDe(x, c, persona);
+    if (lib) return `libre (${lib.nombre})`;
+    return idsToma(x, c, persona).filter((id) => D.recetas[id].clase === "principal").map((id) => D.recetas[id].corto).join(" + ");
+  }).filter(Boolean).join(" · ");
+  const hay = dias.some((x) => origen(x) !== x);
+  return `<div class="ficha"><h2>Intercambiar el ${nd(d)} con…</h2>
+    <p class="acomp">Se cambian los menús completos de los dos, con lo que hayáis cambiado o añadido. La fecha, la B12 y
+      los días de batch se quedan donde están; la lista del batch se rehace sola.</p>
+    <p class="acomp"><b>Ahora el ${nd(d)}:</b> ${esc(resumen(d))}</p>
+    <div class="opciones">${dias.filter((x) => x !== d).map((x) => `<button class="opcion" data-intercambiar="${x}">
+      <b>${D.semana.nombre_dia[x]} ${fecha(x)}${origen(x) !== x ? ` <span class="chip gris">menú del ${nd(origen(x))}</span>` : ""}</b>
+      <span>${esc(resumen(x))}</span></button>`).join("")}</div>
+    ${hay ? `<div class="botones"><button class="boton" data-intercambiar="">Deshacer todos los intercambios</button></div>` : ""}</div>`;
+}
+
+function intercambiar(d1, d2) {
+  if (!d2) {
+    ponerVarios(D.semana.dias.filter((x) => valor(`c:${x}:orden`)).map((x) => [`c:${x}:orden`, ""]));
+    return;
+  }
+  const o1 = origen(d1), o2 = origen(d2);
+  ponerVarios([[`c:${d1}:orden`, o2 === d1 ? "" : o2], [`c:${d2}:orden`, o1 === d2 ? "" : o1]]);
 }
 
 function vistaLibre(d, c) {
@@ -457,11 +644,16 @@ function vistaSemana() {
         if (ids.every((x) => x && x === ids[0])) comun.push(esc(D.recetas[ids[0]].corto));
         else ps.forEach((p, k) => { if (ids[k]) solo[p].push(esc(D.recetas[ids[k]].corto)); });
       });
+      anadidos(d, c).forEach((a) => {
+        const ids = ps.map((p) => (!lib[p] && a.quien.includes(p) ? a.id : null));
+        if (ids.every((x) => x)) comun.push(esc(D.recetas[a.id].corto));
+        else ps.forEach((p, k) => { if (ids[k]) solo[p].push(esc(D.recetas[a.id].corto)); });
+      });
       ps.forEach((p) => { if (lib[p]) solo[p] = [`libre (${esc(lib[p].nombre)})`]; });
     }
     const lineas = ps.filter((p) => solo[p].length)
       .map((p) => `<span class="solo"><b>${esc(D.personas[p])}:</b> ${solo[p].join(" + ")}</span>`).join("");
-    const marca = nCambiados(d, c) && !lineas ? ' <span class="chip aviso">cambiado</span>' : "";
+    const marca = (nCambiados(d, c) || anadidos(d, c).length) && !lineas ? ' <span class="chip aviso">cambiado</span>' : "";
     return `<span>${comun.join(" + ") || (lineas ? "" : "–")}${marca}${lineas}</span>`;
   };
   const kcal = (d) => `<p class="kcal-dia">` + PERSONAS().map((p) => {
@@ -469,12 +661,13 @@ function vistaSemana() {
     const fuera = Math.abs(k / obj - 1) > D.energia.tolerancia;
     return `<span class="${fuera ? "mal" : ""}">${esc(D.personas[p])} ${k}</span>`;
   }).join(" · ") + ` kcal</p>`;
-  const batch = Object.entries(D.semana.batch).map(([d, ids]) =>
+  const batch = Object.keys(D.semana.batch).map((d) => [d, batchDe(d)]).filter(([, ids]) => ids.length).map(([d, ids]) =>
     `<span class="chip gris">Batch ${esc(D.semana.nombre_dia[d].toLowerCase())}</span> ${ids.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
   const opc = [...new Set(OPCIONALES.flatMap((c) => D.semana.opcionales[c] || []))];
   return `${batch.length ? `<p class="nota-dia">${batch.join("<br>")}</p>` : ""}
     <div class="semana">${dias.map((d) => `<button class="tarjeta dia ${esHoy(d) ? "hoy" : ""}" data-ir="#hoy/${d}">
-      <h3>${D.semana.nombre_dia[d]} ${fecha(d)}${esHoy(d) ? ' <span class="chip">hoy</span>' : ""}</h3>
+      <h3>${D.semana.nombre_dia[d]} ${fecha(d)}${esHoy(d) ? ' <span class="chip">hoy</span>' : ""}${origen(d) !== d
+        ? ` <span class="chip gris">menú del ${esc(D.semana.nombre_dia[origen(d)].toLowerCase())}</span>` : ""}</h3>
       ${TOMAS.map((c) => `<p><i>${NOMBRE_TOMA[c]}</i> ${celda(d, c)}</p>`).join("")}${kcal(d)}</button>`).join("")}</div>
     ${opc.length ? `<p class="nota-dia" style="margin-top:12px"><span class="chip gris">Si tenéis hambre</span> ${opc.map((x) => esc(D.recetas[x].corto)).join(" · ")}</p>` : ""}
     <p class="nota-dia"><button class="enlace" data-ir="#ajustes">Sincronizar</button> <span class="estado-sync">${esc(Sync.texto())}</span></p>`;
@@ -493,13 +686,15 @@ function vistaCompra() {
       <button data-check="${esc(x.a)}" aria-pressed="${x.si}"><span class="caja"></span><span class="txt">${esc(limpio(x.a.replace(/^opc:/, "")))}
       ${x.q || x.nota ? `<span class="cant">${esc(coma(x.q))}${x.nota ? `${x.q ? " · " : ""}<em>${esc(x.nota)}</em>` : ""}</span>` : ""}</span></button></li>`).join("")}</ul></section>`;
   }).join("");
-  const n = { c: 0, l: 0 };
+  const n = { c: 0, l: 0, a: 0 };
   for (const d of D.semana.dias) for (const c of TOMAS) {
     n.c += nCambiados(d, c);
+    n.a += anadidos(d, c).length;
     if (PERSONAS().some((p) => libreDe(d, c, p))) n.l++;
   }
   const cambios = [n.c ? `${n.c} plato${n.c > 1 ? "s" : ""} cambiado${n.c > 1 ? "s" : ""}` : "",
-    n.l ? `${n.l} toma${n.l > 1 ? "s" : ""} libre${n.l > 1 ? "s" : ""}` : ""].filter(Boolean).join(" y ");
+    n.a ? `${n.a} añadido${n.a > 1 ? "s" : ""}` : "",
+    n.l ? `${n.l} toma${n.l > 1 ? "s" : ""} libre${n.l > 1 ? "s" : ""}` : ""].filter(Boolean).join(", ");
   return `<p class="progreso">Marcado ${hechos} de ${total}.${cambios ? ` Recalculada con ${cambios}.` : ""}
     <br><span class="estado-sync">${esc(Sync.texto())}</span></p>
     <div class="compra">${html}</div>`;
@@ -532,7 +727,9 @@ function render() {
   if (!D) return;
   const { v, r } = ruta();
   let html;
-  if (v === "item" && D.dias[r[0]]) html = vistaItem(r[0], r[1], Number(r[2]));
+  if (v === "item" && D.dias[r[0]]) html = vistaItem(r[0], r[1], esAnadido(r[2]) ? r[2] : Number(r[2]));
+  else if (v === "anadir" && D.dias[r[0]]) html = vistaAnadir(r[0], r[1]);
+  else if (v === "intercambiar" && D.dias[r[0]]) html = vistaIntercambiar(r[0]);
   else if (v === "libre" && D.dias[r[0]]) html = vistaLibre(r[0], r[1]);
   else if (v === "receta") html = vistaReceta(r[0]);
   else if (v === "semana") html = vistaSemana();
@@ -559,7 +756,7 @@ function cambiarDia(d) {
 }
 
 document.addEventListener("click", (ev) => {
-  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion]");
+  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion],[data-anadir],[data-quitar],[data-intercambiar],[data-sugerir]");
   if (!b || b.disabled) return;
   const ds = b.dataset;
   const { r } = ruta();
@@ -575,6 +772,16 @@ document.addEventListener("click", (ev) => {
     const [d, c] = r;
     elegirLibre(d, c, ds.libre);
   } else if (ds.check !== undefined) poner("k:" + ds.check, !valor("k:" + ds.check));
+  else if (ds.sugerir !== undefined) {
+    // Al tentempié que toca por la hora (si es hoy), o a la media tarde.
+    const d = D.dias[r[0]] ? r[0] : diaHoy();
+    const c = esHoy(d) && new Date().getHours() < 12 ? "media_manana" : "media_tarde";
+    cambiarAnadido(d, c, ds.sugerir, true, [ds.quien]);
+  } else if (ds.anadir !== undefined) { cambiarAnadido(r[0], r[1], ds.anadir, true); volver("#hoy/" + r[0]); }
+  else if (ds.quitar !== undefined) {
+    cambiarAnadido(r[0], r[1], ds.quitar, false);
+    if (!anadidos(r[0], r[1]).some((a) => a.id === ds.quitar)) volver("#hoy/" + r[0]);
+  } else if (ds.intercambiar !== undefined) { intercambiar(r[0], ds.intercambiar); volver("#hoy/" + r[0]); }
   else if (ds.dia !== undefined) cambiarDia(ds.dia);
   else if (ds.accion === "sync-guardar" || ds.accion === "sync-quitar") {
     const quitar = ds.accion === "sync-quitar";
@@ -582,10 +789,19 @@ document.addEventListener("click", (ev) => {
     if (err) $("#sync-error").textContent = err;
     else render();
   }
-  else if (ds.volver !== undefined) {
-    if (history.state && history.state.app) history.back();
-    else { history.replaceState(null, "", ds.volver); panel = null; render(); }
-  }
+  else if (ds.volver !== undefined) volver(ds.volver);
+});
+
+function volver(destino) {
+  if (history.state && history.state.app) history.back();
+  else { history.replaceState(null, "", destino); panel = null; para = "ambos"; render(); }
+}
+
+/* Buscar al añadir: filtra sin volver a pintar (así no se pierde lo escrito). */
+document.addEventListener("input", (ev) => {
+  if (ev.target.id !== "buscar") return;
+  const q = norm(ev.target.value.trim());
+  document.querySelectorAll(".fila-anadir").forEach((b) => { b.hidden = !!q && !b.dataset.nombre.includes(q); });
 });
 
 window.addEventListener("popstate", () => { panel = null; para = "ambos"; render(); });
