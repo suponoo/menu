@@ -14,6 +14,7 @@ let D = null;          // datos.json
 let E = {};            // estado de la semana: {clave: {v, t}}
 let persona = "carlos";
 let panel = null;      // panel abierto en la ficha: "cambiar"
+let para = "ambos";    // a quién se aplica un cambio o una toma libre: "ambos" o una persona
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -34,32 +35,52 @@ const guardado = {
 const claveSemana = () => "nv:" + D.semana.inicio;
 const valor = (k) => (E[k] ? E[k].v : undefined);
 
-function poner(k, v) {
-  E[k] = { v, t: Date.now() };
+function poner(k, v) { ponerVarios([[k, v]]); }
+
+function ponerVarios(pares) {
+  const t = Date.now();
+  for (const [k, v] of pares) {
+    E[k] = { v, t };
+    if (window.Sync) Sync.anotar(k);
+  }
   guardado.escribir(claveSemana(), E);
-  if (window.Sync) Sync.anotar(k);
   render();
 }
 
 /* ---------- Modelo: qué se come cada día ---------- */
 const toma = (d, c) => (D.dias[d] || {})[c] || null;
 
-/* Platos de la toma para p: [{i, id, original, p}]; cada uno se puede cambiar (clave c:dia:toma:i). */
+const PERSONAS = () => Object.keys(D.personas);
+
+/* Plato i de la toma para p: cambio propio (c:dia:toma:i:p) > cambio de los dos (c:dia:toma:i) > el del menú. */
+function idDe(d, c, i, p) {
+  return valor(`c:${d}:${c}:${i}:${p}`) || valor(`c:${d}:${c}:${i}`) || toma(d, c).items[i].id;
+}
+
+/* Platos de la toma para p: [{i, id, original, p}]. */
 function itemsDe(d, c, p) {
   const t = toma(d, c);
   if (!t || !t.items) return [];
-  return t.items.map((it, i) => ({ i, original: it.id, p: it.p, id: valor(`c:${d}:${c}:${i}`) || it.id }))
+  return t.items.map((it, i) => ({ i, original: it.id, p: it.p, id: idDe(d, c, i, p) }))
     .filter((it) => it.p === "ambos" || it.p === p);
 }
-const cambiado = (d, c, i) => { const v = valor(`c:${d}:${c}:${i}`); return !!v && v !== toma(d, c).items[i].id; };
-const nCambiados = (d, c) => ((toma(d, c) || {}).items || []).filter((_, i) => cambiado(d, c, i)).length;
+const cambiado = (d, c, i, p) => idDe(d, c, i, p) !== toma(d, c).items[i].id;
+const nCambiados = (d, c) => ((toma(d, c) || {}).items || [])
+  .filter((_, i) => PERSONAS().some((p) => cambiado(d, c, i, p))).length;
 
+/* Toma libre para p: la propia (l:dia:toma:p; "-" = no libre para p) > la de los dos (l:dia:toma) > la del menú. */
 function libreDe(d, c, p) {
+  const vp = valor(`l:${d}:${c}:${p}`);
+  if (vp === "-") return null;
+  if (vp) return { nombre: vp, kcal: D.libres[vp] ?? 0 };
   const v = valor(`l:${d}:${c}`);
   if (v !== undefined) return v ? { nombre: v, kcal: D.libres[v] ?? 0 } : null;
   const t = toma(d, c);
   return t && t.libre && t.libre[p] ? t.libre[p] : null;
 }
+
+/* Lo que la otra persona come distinto en esa toma, para avisarlo en la tarjeta. */
+const otra = (p) => PERSONAS().find((x) => x !== p);
 
 const fijosDe = (c, p) => ((D.semana.fijos[p] || {})[c] || []);
 const idsToma = (d, c, p) => itemsDe(d, c, p).map((x) => x.id);
@@ -182,7 +203,7 @@ function cantidad(g, m) {
 function chipsReceta(id, d, c, i) {
   const r = D.recetas[id];
   let s = "";
-  if (d && cambiado(d, c, i)) s += ` <span class="chip aviso">cambiado</span>`;
+  if (d && cambiado(d, c, i, persona)) s += ` <span class="chip aviso">cambiado</span>`;
   if (r.alternativa) s += ` <span class="chip gris">alternativa</span>`;
   return s;
 }
@@ -199,28 +220,35 @@ function racionesChips(id, p) {
 }
 
 function tarjetaItem(d, c, it) {
-  const r = D.recetas[it.id], p = persona;
+  const r = D.recetas[it.id], p = persona, o = otra(p);
+  const t = toma(d, c).items[it.i];
+  const delOtro = (t.p === "ambos" || t.p === o) && !libreDe(d, c, o) ? idDe(d, c, it.i, o) : null;
   return `<button class="tarjeta item ${r.clase}" data-ir="#item/${d}/${c}/${it.i}">
     <span class="rol">${rol(it.id, c)}${chipsReceta(it.id, d, c, it.i)}</span>
     <span class="nombre">${esc(r.corto)}</span>
     <span class="raciones">${racionesChips(it.id, p)}</span>
     <span class="kcal">${Math.round(r.kcal[p])} kcal · ${r.prot[p]} g proteína</span>
+    ${delOtro && delOtro !== it.id ? `<span class="otro">${esc(D.personas[o])}: ${esc(D.recetas[delOtro].corto)}</span>` : ""}
   </button>`;
 }
 
 function tarjetaToma(d, c) {
-  const p = persona, lib = libreDe(d, c, p);
+  const p = persona, lib = libreDe(d, c, p), o = otra(p), libO = libreDe(d, c, o);
   const cab = `<div class="cabeza"><span class="etiqueta">${NOMBRE_TOMA[c]}</span>${interruptor()}</div>`;
   if (lib) {
+    const delOtro = libO ? (libO.nombre !== lib.nombre ? `libre (${libO.nombre})` : "")
+      : idsToma(d, c, o).map((x) => D.recetas[x].corto).join(" + ");
     return `<section class="toma">${cab}<button class="tarjeta item libre" data-ir="#libre/${d}/${c}">
       <span class="rol">Toma libre</span><span class="nombre">${esc(lib.nombre)}</span>
-      <span class="kcal">Unas ${lib.kcal} kcal, estimadas · no entra en la compra</span></button></section>`;
+      <span class="kcal">Unas ${lib.kcal} kcal, estimadas · no entra en la compra</span>
+      ${delOtro ? `<span class="otro">${esc(D.personas[o])}: ${esc(delOtro)}</span>` : ""}</button></section>`;
   }
   const items = itemsDe(d, c, p);
   const fijos = fijosDe(c, p);
   return `<section class="toma">${cab}
     <div class="items">${items.length ? items.map((it) => tarjetaItem(d, c, it)).join("")
       : '<p class="acomp">Nada previsto.</p>'}</div>
+    ${libO ? `<p class="otro-toma">${esc(D.personas[o])}: libre (${esc(libO.nombre)})</p>` : ""}
     <div class="pie-toma"><span>${items.length ? "Total: " + kcalTxt(items.map((x) => x.id), p) : ""}</span>
       <button class="enlace" data-ir="#libre/${d}/${c}">Toma libre…</button></div>
     ${fijos.length ? `<div class="fijos">Además, cada día: ${fijos.map((x) => esc(D.recetas[x].corto)).join(" · ")}</div>` : ""}
@@ -278,8 +306,8 @@ function vistaHoy(d) {
     <div class="tomas">${tarjetas}</div>${avisoEnergia(d)}`;
 }
 
-function tablaIngredientes(id) {
-  const r = D.recetas[id], ps = Object.keys(D.personas);
+function tablaIngredientes(id, solo) {
+  const r = D.recetas[id], ps = solo ? [solo] : Object.keys(D.personas);
   const filas = new Map();
   for (const p of ps) for (const [a, g, m] of r.raciones[p]) {
     if (!filas.has(a)) filas.set(a, {});
@@ -291,10 +319,10 @@ function tablaIngredientes(id) {
   return `<table><tr><th>Ingrediente</th>${th}</tr>${tr}</table>`;
 }
 
-function cuerpoReceta(id) {
+function cuerpoReceta(id, solo) {
   const r = D.recetas[id];
-  const ps = Object.keys(D.personas);
-  return `${tablaIngredientes(id)}
+  const ps = solo ? [solo] : Object.keys(D.personas);
+  return `${tablaIngredientes(id, solo)}
     ${r.pasos.length ? `<h3>Pasos</h3><ol class="pasos">${r.pasos.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : ""}
     ${r.mejoras.length ? `<h3>Qué hemos mejorado</h3><ul class="mejoras">${r.mejoras.map((m) =>
       `<li>${esc(m.cambio)}${m.motivo ? `<br><span>${esc(m.motivo)}</span>` : ""}</li>`).join("")}</ul>` : ""}
@@ -307,30 +335,62 @@ function metaReceta(id) {
   return [mom, r.min ? `${r.min} min` : ""].filter(Boolean).join(" · ");
 }
 
+function selectorPara(texto) {
+  const ops = [["ambos", "Los dos"], ...Object.entries(D.personas).map(([p, n]) => [p, "Solo " + n])];
+  return `<div class="para"><span>${texto}</span><div class="quien" role="group">` +
+    ops.map(([k, n]) => `<button data-para="${k}" class="${para === k ? "si" : ""}" aria-pressed="${para === k}">${esc(n)}</button>`).join("") +
+    `</div></div>`;
+}
+
 function opcionesCambiar(d, c, i) {
-  const t = toma(d, c).items[i];
-  const actual = valor(`c:${d}:${c}:${i}`) || t.id;
-  const alts = ((D.alternativas[c] || {})[actual] || []).filter((x) => x !== t.id);
-  const linea = (id) => Object.keys(D.personas).map((p) =>
+  const orig = toma(d, c).items[i].id;
+  const quien = para === "ambos" ? PERSONAS() : [para];
+  const actual = idDe(d, c, i, para === "ambos" ? persona : para);
+  const alts = ((D.alternativas[c] || {})[actual] || [])
+    .filter((x) => x !== orig && !quien.every((p) => idDe(d, c, i, p) === x));
+  const linea = (id) => PERSONAS().map((p) =>
     `${esc(D.personas[p])}: ${Math.round(D.recetas[id].kcal[p])} kcal · ${D.recetas[id].prot[p]} g proteína`).join("<br>");
-  const op = (id, orig) => `<div class="alt ${orig ? "original" : ""}">
+  const op = (id, esOrig) => `<div class="alt ${esOrig ? "original" : ""}">
       <button class="alt-elegir" data-elegir="${id}">
-        <b>${orig ? "Volver al original: " : ""}${esc(D.recetas[id].corto)}${D.recetas[id].alternativa ? ' <span class="chip gris">alternativa</span>' : ""}</b>
+        <b>${esOrig ? "Volver al original: " : ""}${esc(D.recetas[id].corto)}${D.recetas[id].alternativa ? ' <span class="chip gris">alternativa</span>' : ""}</b>
         <span>${linea(id)}</span></button>
       <button class="ver" data-ir="#receta/${id}" aria-label="Ver la receta">Ver</button></div>`;
-  return `<div class="opciones">${cambiado(d, c, i) ? op(t.id, true) : ""}${alts.map((id) => op(id)).join("")}
+  return `${selectorPara("Cambiar para:")}<div class="opciones">
+    ${quien.some((p) => cambiado(d, c, i, p)) ? op(orig, true) : ""}${alts.map((id) => op(id)).join("")}
     ${alts.length ? "" : '<p class="acomp">No hay nada parecido en el recetario.</p>'}</div>`;
 }
 
+function elegirPlato(d, c, i, id) {
+  const orig = toma(d, c).items[i].id;
+  if (para === "ambos") {
+    ponerVarios([[`c:${d}:${c}:${i}`, id === orig ? "" : id],
+      ...PERSONAS().filter((p) => valor(`c:${d}:${c}:${i}:${p}`)).map((p) => [`c:${d}:${c}:${i}:${p}`, ""])]);
+  } else {
+    const comun = valor(`c:${d}:${c}:${i}`) || orig;
+    poner(`c:${d}:${c}:${i}:${para}`, id === comun ? "" : id);
+  }
+}
+
 function opcionesLibre(d, c) {
-  const activo = libreDe(d, c, persona);
-  return `<div class="opciones">` +
-    (activo ? `<button class="opcion original" data-libre=""><b>Quitar libre</b><span>Vuelve lo previsto</span></button>` : "") +
+  const quien = para === "ambos" ? PERSONAS() : [para];
+  const libres = quien.map((p) => libreDe(d, c, p));
+  const alguno = libres.some(Boolean);
+  return `${selectorPara("Para:")}<div class="opciones">` +
+    (alguno ? `<button class="opcion original" data-libre=""><b>Quitar libre</b><span>Vuelve lo previsto</span></button>` : "") +
     Object.entries(D.libres).map(([n, k]) => {
-      const si = activo && activo.nombre === n;
+      const si = libres.every((l) => l && l.nombre === n);
       return `<button class="opcion ${si ? "original" : ""}" data-libre="${esc(n)}"><b>${esc(n)}${si ? " ✓" : ""}</b>` +
         `<span>Unas ${k} kcal por persona</span></button>`;
     }).join("") + `</div>`;
+}
+
+function elegirLibre(d, c, nombre) {
+  if (para === "ambos") {
+    ponerVarios([[`l:${d}:${c}`, nombre],
+      ...PERSONAS().filter((p) => valor(`l:${d}:${c}:${p}`)).map((p) => [`l:${d}:${c}:${p}`, ""])]);
+  } else {
+    poner(`l:${d}:${c}:${para}`, nombre || "-");
+  }
 }
 
 function vistaItem(d, c, i) {
@@ -338,26 +398,34 @@ function vistaItem(d, c, i) {
     NOMBRE_TOMA[c], `${D.semana.nombre_dia[d]} ${fecha(d)}`);
   const t = toma(d, c) && toma(d, c).items && toma(d, c).items[i];
   if (!t) return `<p class="vacio">No está en el menú.</p>`;
-  const id = valor(`c:${d}:${c}:${i}`) || t.id;
+  const id = idDe(d, c, i, persona), o = otra(persona);
+  const idO = (t.p === "ambos" || t.p === o) && !libreDe(d, c, o) ? idDe(d, c, i, o) : null;
+  const distinto = idO && idO !== id;
   const r = D.recetas[id];
   return `<div class="ficha"><span class="chip gris">${rol(id, c)}</span><h2>${esc(r.nombre)}</h2>
     <div class="meta">${esc(metaReceta(id))}${chipsReceta(id, d, c, i)}</div>
+    ${distinto ? `<p class="otro-toma">${esc(D.personas[o])} come otra cosa:
+      <button class="volver" data-ir="#receta/${idO}">${esc(D.recetas[idO].corto)} ›</button></p>` : ""}
     <div class="botones"><button class="boton ${panel === "cambiar" ? "abierto" : ""}" data-panel="cambiar">Cambiar</button>
       ${r.clase === "principal" ? `<button class="boton" data-ir="#libre/${d}/${c}">Toma libre</button>` : ""}</div>
     ${panel === "cambiar" ? opcionesCambiar(d, c, i) : ""}
     <div class="cabeza" style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
       <h3 style="margin:0">Ingredientes</h3>${interruptor()}</div>
-    ${cuerpoReceta(id)}</div>`;
+    ${cuerpoReceta(id, distinto ? persona : null)}</div>`;
 }
 
 function vistaLibre(d, c) {
   cabecera(`<button class="flecha" data-volver="#hoy/${d}" aria-label="Volver">‹</button>`,
     `${NOMBRE_TOMA[c]} libre`, `${D.semana.nombre_dia[d]} ${fecha(d)}`);
-  const lib = libreDe(d, c, persona);
   const principal = TOMAS.includes(c);
+  const estado = PERSONAS().map((p) => {
+    const l = libreDe(d, c, p);
+    return `<b>${esc(D.personas[p])}</b>: ${l ? `libre (${esc(l.nombre)})` : "lo previsto"}`;
+  }).join(" · ");
   const previsto = principal ? idsToma(d, c, persona) : (D.semana.opcionales[c] || []);
-  return `<div class="ficha"><h2>${lib ? `Libre: ${esc(lib.nombre)}` : "Toma libre"}</h2>
-    <p class="meta">${principal ? "Para los dos: sale de la compra y su energía se estima." : "Su energía se suma al día."}</p>
+  return `<div class="ficha"><h2>Toma libre</h2>
+    <p class="meta">${estado}</p>
+    <p class="acomp">${principal ? "Lo libre sale de la compra de quien lo tome y su energía se estima." : "Su energía se suma al día."}</p>
     ${opcionesLibre(d, c)}
     ${previsto.length ? `<h3>${principal ? "Lo previsto" : "Tentempiés del menú"}</h3>` +
       previsto.map((id) => `<p class="acomp"><button class="volver" data-ir="#receta/${id}">${esc(D.recetas[id].corto)} ›</button></p>`).join("") : ""}</div>`;
@@ -375,20 +443,39 @@ function vistaReceta(id) {
 function vistaSemana() {
   const dias = D.semana.dias;
   cabecera("", "Semana", `del ${fecha(dias[0])} al ${fecha(dias[dias.length - 1])}`, `<button class="flecha" data-ir="#ajustes" aria-label="Sincronizar"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M18 2v4h-4M6 22v-4h4"/></svg></button>`);
+  // Lo que comen los dos en una línea; debajo, dentro de la toma, lo distinto de cada uno.
   const celda = (d, c) => {
-    const lib = libreDe(d, c, persona);
-    if (lib) return `<span class="chip aviso">libre</span> ${esc(lib.nombre)}`;
-    const ids = idsToma(d, c, persona);
-    return ids.length ? ids.map((x) => esc(D.recetas[x].corto)).join(" + ") +
-      (nCambiados(d, c) ? ' <span class="chip aviso">cambiado</span>' : "") : "–";
+    const ps = PERSONAS(), t = toma(d, c) || { items: [] };
+    const lib = Object.fromEntries(ps.map((p) => [p, libreDe(d, c, p)]));
+    const de = (p, i) => (t.items[i].p === "ambos" || t.items[i].p === p ? idDe(d, c, i, p) : null);
+    const comun = [], solo = Object.fromEntries(ps.map((p) => [p, []]));
+    if (ps.every((p) => lib[p]) && ps.every((p) => lib[p].nombre === lib[ps[0]].nombre)) {
+      comun.push(`<span class="chip aviso">libre</span> ${esc(lib[ps[0]].nombre)}`);
+    } else {
+      t.items.forEach((_, i) => {
+        const ids = ps.map((p) => (lib[p] ? null : de(p, i)));
+        if (ids.every((x) => x && x === ids[0])) comun.push(esc(D.recetas[ids[0]].corto));
+        else ps.forEach((p, k) => { if (ids[k]) solo[p].push(esc(D.recetas[ids[k]].corto)); });
+      });
+      ps.forEach((p) => { if (lib[p]) solo[p] = [`libre (${esc(lib[p].nombre)})`]; });
+    }
+    const lineas = ps.filter((p) => solo[p].length)
+      .map((p) => `<span class="solo"><b>${esc(D.personas[p])}:</b> ${solo[p].join(" + ")}</span>`).join("");
+    const marca = nCambiados(d, c) && !lineas ? ' <span class="chip aviso">cambiado</span>' : "";
+    return `<span>${comun.join(" + ") || (lineas ? "" : "–")}${marca}${lineas}</span>`;
   };
+  const kcal = (d) => `<p class="kcal-dia">` + PERSONAS().map((p) => {
+    const k = Math.round(kcalDia(d, p)), obj = D.energia.kcal_dia[p];
+    const fuera = Math.abs(k / obj - 1) > D.energia.tolerancia;
+    return `<span class="${fuera ? "mal" : ""}">${esc(D.personas[p])} ${k}</span>`;
+  }).join(" · ") + ` kcal</p>`;
   const batch = Object.entries(D.semana.batch).map(([d, ids]) =>
     `<span class="chip gris">Batch ${esc(D.semana.nombre_dia[d].toLowerCase())}</span> ${ids.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
   const opc = [...new Set(OPCIONALES.flatMap((c) => D.semana.opcionales[c] || []))];
   return `${batch.length ? `<p class="nota-dia">${batch.join("<br>")}</p>` : ""}
     <div class="semana">${dias.map((d) => `<button class="tarjeta dia ${esHoy(d) ? "hoy" : ""}" data-ir="#hoy/${d}">
       <h3>${D.semana.nombre_dia[d]} ${fecha(d)}${esHoy(d) ? ' <span class="chip">hoy</span>' : ""}</h3>
-      ${TOMAS.map((c) => `<p><i>${NOMBRE_TOMA[c]}</i> ${celda(d, c)}</p>`).join("")}</button>`).join("")}</div>
+      ${TOMAS.map((c) => `<p><i>${NOMBRE_TOMA[c]}</i> ${celda(d, c)}</p>`).join("")}${kcal(d)}</button>`).join("")}</div>
     ${opc.length ? `<p class="nota-dia" style="margin-top:12px"><span class="chip gris">Si tenéis hambre</span> ${opc.map((x) => esc(D.recetas[x].corto)).join(" · ")}</p>` : ""}
     <p class="nota-dia"><button class="enlace" data-ir="#ajustes">Sincronizar</button> <span class="estado-sync">${esc(Sync.texto())}</span></p>`;
 }
@@ -409,7 +496,7 @@ function vistaCompra() {
   const n = { c: 0, l: 0 };
   for (const d of D.semana.dias) for (const c of TOMAS) {
     n.c += nCambiados(d, c);
-    if (valor(`l:${d}:${c}`)) n.l++;
+    if (PERSONAS().some((p) => libreDe(d, c, p))) n.l++;
   }
   const cambios = [n.c ? `${n.c} plato${n.c > 1 ? "s" : ""} cambiado${n.c > 1 ? "s" : ""}` : "",
     n.l ? `${n.l} toma${n.l > 1 ? "s" : ""} libre${n.l > 1 ? "s" : ""}` : ""].filter(Boolean).join(" y ");
@@ -459,6 +546,7 @@ function render() {
 
 function ir(hash) {
   panel = null;
+  para = "ambos";
   history.pushState({ app: (history.state && history.state.app || 0) + 1 }, "", hash);
   render();
   window.scrollTo(0, 0);
@@ -471,21 +559,21 @@ function cambiarDia(d) {
 }
 
 document.addEventListener("click", (ev) => {
-  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion]");
+  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion]");
   if (!b || b.disabled) return;
   const ds = b.dataset;
   const { r } = ruta();
   if (ds.ir !== undefined) ir(ds.ir);
   else if (ds.persona) { persona = ds.persona; guardado.escribir("nv:persona", persona); render(); }
   else if (ds.panel) { panel = panel === ds.panel ? null : ds.panel; render(); }
+  else if (ds.para) { para = ds.para; render(); }
   else if (ds.elegir !== undefined) {
     const [d, c, i] = r;
     panel = null;
-    poner(`c:${d}:${c}:${i}`, ds.elegir === toma(d, c).items[i].id ? "" : ds.elegir);
+    elegirPlato(d, c, Number(i), ds.elegir);
   } else if (ds.libre !== undefined) {
     const [d, c] = r;
-    panel = null;
-    poner(`l:${d}:${c}`, ds.libre);
+    elegirLibre(d, c, ds.libre);
   } else if (ds.check !== undefined) poner("k:" + ds.check, !valor("k:" + ds.check));
   else if (ds.dia !== undefined) cambiarDia(ds.dia);
   else if (ds.accion === "sync-guardar" || ds.accion === "sync-quitar") {
@@ -500,8 +588,8 @@ document.addEventListener("click", (ev) => {
   }
 });
 
-window.addEventListener("popstate", () => { panel = null; render(); });
-window.addEventListener("hashchange", () => { panel = null; render(); });
+window.addEventListener("popstate", () => { panel = null; para = "ambos"; render(); });
+window.addEventListener("hashchange", () => { panel = null; para = "ambos"; render(); });
 
 /* Deslizar a los lados en Hoy para pasar de día. */
 let toque = null;
@@ -533,5 +621,13 @@ async function arrancar() {
   if (window.Sync) Sync.iniciar();
 }
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+if ("serviceWorker" in navigator) {
+  // Al publicar una versión nueva de la app, el service worker nuevo toma el control y se recarga una vez.
+  const habia = !!navigator.serviceWorker.controller;
+  let recargada = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (habia && !recargada) { recargada = true; location.reload(); }
+  });
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
 arrancar();

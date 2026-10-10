@@ -61,6 +61,15 @@ main { max-width: 1100px; margin: 0 auto; padding: 12px 16px calc(var(--barra) +
 .enlace { background: none; border: 1px solid var(--linea); border-radius: 20px; padding: 4px 12px; min-height: 38px;
           color: var(--verde); font-weight: 600; font-size: 15px; white-space: nowrap; }
 .fijos { font-size: 15px; color: var(--suave); }
+.item .otro, .otro-toma { display: block; font-size: 14px; color: var(--aviso); margin-top: 6px; font-weight: 600; }
+.otro-toma { margin: 0; }
+.otro-toma .volver { padding: 0; min-height: 0; font-size: 15px; }
+.para { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 12px 0 4px; font-size: 15px; color: var(--suave); }
+.para .quien button { padding: 6px 10px; font-size: 14px; }
+.dia .solo { display: block; font-size: 15px; color: var(--aviso); margin-top: 2px; }
+.dia .solo b { font-weight: 600; }
+.kcal-dia { color: var(--suave); font-size: 14px; margin-top: 6px !important; display: block !important; }
+.kcal-dia .mal { color: var(--aviso); font-weight: 600; }
 
 .opcional { background: var(--gris-toma); border-style: dashed; color: var(--suave); padding: 10px 14px; }
 .opcional .etiqueta { color: var(--suave); }
@@ -155,7 +164,7 @@ ul.mejoras span { color: var(--suave); font-size: 15px; }
   .tomas { grid-template-columns: repeat(3, 1fr); align-items: start; }
   .tomas .opcional { grid-column: span 1; order: 1; }
   .semana { grid-template-columns: repeat(7, 1fr); gap: 8px; }
-  .dia { padding: 10px; } .dia p { font-size: 14px; display: block; } .dia p i { display: block; min-width: 0; font-size: 12px; }
+  .dia { padding: 10px; } .dia p { font-size: 14px; display: block; } .dia .solo { font-size: 13px; } .kcal-dia { font-size: 12px; } .dia p i { display: block; min-width: 0; font-size: 12px; }
   .ficha { max-width: 760px; }
   .compra { columns: 2 360px; column-gap: 32px; } .compra section { break-inside: avoid; }
 }

@@ -2,12 +2,14 @@
    - datos.json: primero la red (para ver la semana nueva) y, sin conexión, la última copia.
    - El resto (carcasa): copia guardada al momento y se actualiza por detrás para la próxima vez.
    - Las llamadas a otros dominios (Apps Script) no pasan por aquí. */
-const CACHE = "menu-v2";
+const CACHE = "menu-v3";
 const CARCASA = ["./", "index.html", "app.js", "sync.js", "estilo.css", "manifest.json", "datos.json",
                  "iconos/icono-192.png", "iconos/icono-512.png", "iconos/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CARCASA)).then(() => self.skipWaiting()));
+  // cache: "reload" para no coger copias viejas de la caché del navegador al instalar una versión nueva
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CARCASA.map((u) => new Request(u, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {
