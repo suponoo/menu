@@ -7,7 +7,7 @@ const OPCIONALES = ["media_manana", "media_tarde"];
 const ORDEN_DIA = ["desayuno", "media_manana", "comida", "media_tarde", "cena"];
 const NOMBRE_TOMA = { desayuno: "Desayuno", media_manana: "Media mañana", comida: "Comida",
                       media_tarde: "Media tarde", cena: "Cena" };
-const ROL = { principal: "Plato", postre: "Postre", pan: "Pan", acompanamiento: "Acompañamiento" };
+const ROL = { principal: "Plato", bebida: "Bebida", postre: "Postre", pan: "Pan", acompanamiento: "Acompañamiento" };
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 
 let D = null;          // datos.json
@@ -55,13 +55,30 @@ const PERSONAS = () => Object.keys(D.personas);
 const origen = (d) => valor(`c:${d}:orden`) || d;
 const toma = (d, c) => (D.dias[origen(d)] || {})[c] || null;
 const esAnadido = (i) => String(i).startsWith("+");
+const esFijo = (i) => String(i).startsWith("f");
+const indice = (x) => (/^[+f]/.test(String(x)) ? String(x) : Number(x));
+
+/* Plato de partida en ese hueco: el añadido, el fijo de cada día (bebida) o el de la plantilla. */
+function originalDe(d, c, i, p) {
+  if (esAnadido(i)) return String(i).slice(1);
+  if (esFijo(i)) return fijosDe(c, p)[Number(String(i).slice(1))];
+  return toma(d, c).items[i].id;
+}
+
+/* ¿Ese hueco de la toma es de p? */
+function aplica(d, c, i, p) {
+  if (esAnadido(i)) return (anadidos(d, c).find((a) => a.id === String(i).slice(1)) || { quien: [] }).quien.includes(p);
+  if (esFijo(i)) return !!fijosDe(c, p)[Number(String(i).slice(1))];
+  const t = toma(d, c).items[i];
+  return t.p === "ambos" || t.p === p;
+}
 
 /* Plato i de la toma para p: cambio propio (c:dia:toma:i:p) > cambio de los dos (c:dia:toma:i) > el del menú.
    Los platos añadidos llevan i = "+<id>". */
 function idDe(d, c, i, p) {
   if (esAnadido(i)) return String(i).slice(1);
   const o = origen(d);
-  return valor(`c:${o}:${c}:${i}:${p}`) || valor(`c:${o}:${c}:${i}`) || toma(d, c).items[i].id;
+  return valor(`c:${o}:${c}:${i}:${p}`) || valor(`c:${o}:${c}:${i}`) || originalDe(d, c, i, p);
 }
 
 /* Platos añadidos a la toma: c:<día>:<toma>:+<id> = "carlos,angela" (para quién), en el orden en que se añadieron. */
@@ -77,15 +94,25 @@ function itemsDe(d, c, p) {
   const t = toma(d, c);
   const base = t && t.items ? t.items.map((it, i) => ({ i, original: it.id, p: it.p, id: idDe(d, c, i, p) }))
     .filter((it) => it.p === "ambos" || it.p === p) : [];
-  return base.concat(anadidos(d, c).filter((a) => a.quien.includes(p))
+  const bebidas = libreReal(d, c, p) ? [] : fijosDe(c, p).map((id, k) => ({ i: "f" + k, original: id, p, id: idDe(d, c, "f" + k, p), fijo: true }))
+    .filter((it) => D.recetas[it.original].clase === "bebida");
+  return base.concat(bebidas, anadidos(d, c).filter((a) => a.quien.includes(p))
     .map((a) => ({ i: "+" + a.id, original: a.id, p, id: a.id, anadido: true })));
 }
-const cambiado = (d, c, i, p) => !esAnadido(i) && idDe(d, c, i, p) !== toma(d, c).items[i].id;
-const nCambiados = (d, c) => ((toma(d, c) || {}).items || [])
-  .filter((_, i) => PERSONAS().some((p) => cambiado(d, c, i, p))).length;
+const cambiado = (d, c, i, p) => !esAnadido(i) && aplica(d, c, i, p) && idDe(d, c, i, p) !== originalDe(d, c, i, p);
+const huecosFijos = (c) => (fijosDe(c, PERSONAS()[0]) || []).map((_, k) => "f" + k);
+const nCambiados = (d, c) => [...((toma(d, c) || {}).items || []).map((_, i) => i), ...huecosFijos(c)]
+  .filter((i) => PERSONAS().some((p) => cambiado(d, c, i, p))).length;
+
+/* Toma saltada (c:<día>:<toma>:saltar = "carlos,angela"): casos extraordinarios (dormir más, viaje...). Para la energía
+   cuenta como una toma libre de 0 kcal; la compra y el batch no cambian, porque lo cocinado se aprovecha. */
+const saltada = (d, c, p) => String(valor(`c:${origen(d)}:${c}:saltar`) || "").split(",").includes(p);
+/* Libre de verdad (no saltada): la compra, el batch y las bebidas fijas no cuentan esa toma. */
+const libreReal = (d, c, p) => { const l = libreDe(d, c, p); return l && !l.saltada ? l : null; };
 
 /* Toma libre para p: la propia (l:dia:toma:p; "-" = no libre para p) > la de los dos (l:dia:toma) > la del menú. */
 function libreDe(d, c, p) {
+  if (TOMAS.includes(c) && saltada(d, c, p)) return { nombre: "Saltada", kcal: 0, saltada: true };
   const o = origen(d);
   const vp = valor(`l:${o}:${c}:${p}`);
   if (vp === "-") return null;
@@ -96,34 +123,36 @@ function libreDe(d, c, p) {
   return t && t.libre && t.libre[p] ? t.libre[p] : null;
 }
 
-/* Batch: el día de batch b cocina los platos de su tramo (hasta el siguiente día de batch) que ocupan el sitio de un
-   plato de batch de la plantilla. Si se cambia, entra el nuevo solo si se puede hacer en batch; si se intercambian
-   días, cada plato va al batch del tramo donde cae. */
-function batchDe(b) {
-  const dias = D.semana.dias;
-  const bs = Object.keys(D.semana.batch).sort((x, y) => dias.indexOf(x) - dias.indexOf(y));
-  const ini = dias.indexOf(b), sig = bs.find((x) => dias.indexOf(x) > ini);
-  const deBatch = new Set(Object.values(D.semana.batch).flat());
+/* Batch: días elegidos en la pestaña Batch (c:batch:dias, "-" = sin batch) o, si no, los de la plantilla. Cada día de
+   batch cocina, hasta el siguiente día de batch, los platos que se pueden hacer en batch (recetas con batch). Si se
+   cambia un plato o se intercambian días, el batch se rehace solo. */
+function diasBatch() {
+  const v = valor("c:batch:dias"), dias = D.semana.dias;
+  if (v === "-") return [];
+  return (v ? String(v).split(",") : Object.keys(D.semana.batch)).filter((d) => dias.includes(d))
+    .sort((x, y) => dias.indexOf(x) - dias.indexOf(y));
+}
+function tramo(b) {
+  const dias = D.semana.dias, ini = dias.indexOf(b), sig = diasBatch().find((x) => dias.indexOf(x) > ini);
+  return dias.slice(ini, sig ? dias.indexOf(sig) : dias.length);
+}
+/* Raciones que cocina el batch del día b: [{d, c, id, p}], una por persona y toma. */
+function usosBatch(b) {
   const out = [];
-  for (const d of dias.slice(ini, sig ? dias.indexOf(sig) : dias.length)) {
-    for (const c of TOMAS) {
-      ((toma(d, c) || {}).items || []).forEach((it, i) => {
-        if (!deBatch.has(it.id)) return;
-        for (const p of PERSONAS()) {
-          if (libreDe(d, c, p) || !(it.p === "ambos" || it.p === p)) continue;
-          const id = idDe(d, c, i, p);
-          if ((id === it.id || D.recetas[id].batch) && !out.includes(id)) out.push(id);
-        }
-      });
-    }
+  for (const d of tramo(b)) for (const c of TOMAS) for (const p of PERSONAS()) {
+    if (libreReal(d, c, p)) continue;
+    for (const id of idsToma(d, c, p)) if (D.recetas[id].batch) out.push({ d, c, id, p });
   }
   return out;
 }
+const batchDe = (b) => [...new Set(usosBatch(b).map((u) => u.id))];
 
 /* Lo que la otra persona come distinto en esa toma, para avisarlo en la tarjeta. */
 const otra = (p) => PERSONAS().find((x) => x !== p);
 
 const fijosDe = (c, p) => ((D.semana.fijos[p] || {})[c] || []);
+/* Los fijos que no son bebida (lino, nuez de Brasil): van en una línea aparte y no se cambian. */
+const fijosLinea = (c, p) => fijosDe(c, p).filter((id) => D.recetas[id].clase !== "bebida");
 const idsToma = (d, c, p) => itemsDe(d, c, p).map((x) => x.id);
 
 function rol(id, c) {
@@ -132,12 +161,15 @@ function rol(id, c) {
   return cl === "postre" && c === "desayuno" ? "Fruta" : ROL[cl] || "Plato";
 }
 
+/* Energía de una lista de platos para p (la suma común de la tarjeta de energía, Añadir, Saltar y Crear receta). */
+const kcalDe = (ids, p) => ids.reduce((n, id) => n + D.recetas[id].kcal[p], 0);
+
 function kcalDia(d, p) {
   let k = 0;
   for (const c of ORDEN_DIA) {
     const lib = libreDe(d, c, p);
     if (lib) { k += lib.kcal; continue; }
-    for (const id of [...idsToma(d, c, p), ...fijosDe(c, p)]) k += D.recetas[id].kcal[p];
+    k += kcalDe([...idsToma(d, c, p), ...fijosLinea(c, p)], p);
   }
   return k;
 }
@@ -157,8 +189,8 @@ function calcularCompra() {
   for (const p of Object.keys(D.personas)) {
     for (const d of D.semana.dias) {
       for (const c of ORDEN_DIA) {
-        if (libreDe(d, c, p)) continue;
-        for (const id of [...idsToma(d, c, p), ...fijosDe(c, p)]) {
+        if (libreReal(d, c, p)) continue;
+        for (const id of [...idsToma(d, c, p), ...fijosLinea(c, p)]) {
           for (const [a, g] of D.recetas[id].raciones[p]) {
             const k = D.compra.como[a] || a;
             tot[k] = (tot[k] || 0) + g;
@@ -172,7 +204,11 @@ function calcularCompra() {
     const g = tot[a], i = D.compra.info[a] || { s: "despensa" };
     if (i.r) { revisar.push([a, "", ""]); continue; }
     let q;
-    if (i.u) {
+    if (i.e) {   // envases de Alcampo: misma regla que texto_envase() de scripts/compra.py
+      const [peso, uno, varios, pack, avisa] = i.e, n = Math.max(1, Math.ceil(g / peso - 0.05)), sobra = n * peso - g;
+      q = `${n} ${n === 1 ? uno : varios} de ${fg(peso)} g${pack ? ` (packs de ${pack})` : ""}` +
+        `${avisa && sobra >= Math.max(10, 0.1 * peso) ? `; sobran unos ${f0(sobra)} g` : ""} (unos ${f0(g)} g)`;
+    } else if (i.u) {
       const n = Math.ceil(g / i.u[0] - 0.05);
       q = `${n} ${n === 1 ? i.u[1] : i.u[2]} (unos ${f0(g)} g)`;
     } else {
@@ -199,9 +235,35 @@ function comprobar() {
       if (Math.abs(a - b) > 1) difKcal.push(`${p} ${d}: app ${a.toFixed(0)} / scripts ${b}`);
     }
   }
+  // Crear receta: rehacer recetas aprobadas con sus mismos gramos da sus kcal y proteína (±2 %).
+  const difCrear = [];
+  for (const id of ["nutri_lentejas_cremosas_curry", "pasta_bolonesa_soja", "r_crema_coliflor", "empanada_verduras_atun_vegano"]) {
+    const r = D.recetas[id];
+    if (!r) continue;
+    for (const p of PERSONAS()) {
+      const t = sumaNut(r.raciones[p]);
+      if (Math.abs(t.kcal / r.kcal[p] - 1) > 0.02 || Math.abs(t.proteina - r.prot[p]) > Math.max(1, 0.02 * r.prot[p])) difCrear.push(`${id} ${p}`);
+    }
+  }
+  // Saltar: sin desayuno el lunes y reforzando la comida, el día de cada uno vuelve a la banda de ±tolerancia.
+  const difSaltar = [];
+  for (const p of PERSONAS()) {
+    const d = D.semana.dias[0];
+    E = { [`c:${d}:desayuno:saltar`]: { v: p, t: 1 } };
+    rellenar(d, "comida", p, REFUERZO).ids.forEach((id, n) => { E[`c:${d}:comida:+${id}`] = { v: p, t: 2 + n }; });
+    if (estadoEnergia(kcalDia(d, p), p) !== "dentro") difSaltar.push(`${p}: ${Math.round(kcalDia(d, p))} kcal`);
+  }
+  E = {};
+  // Batch: la suma de las bases es la suma de los ingredientes de los platos del batch.
+  const difBatch = diasBatch().filter((b) => {
+    const enBases = Object.values(basesBatch(b)).flatMap((x) => Object.values(x)).reduce((n, x) => n + x.g, 0);
+    const enPlatos = usosBatch(b).reduce((n, u) => n + D.recetas[u.id].raciones[u.p].reduce((m, [, g]) => m + g, 0), 0);
+    return Math.abs(enBases - enPlatos) > 0.5;
+  });
   E = guardadoE;
-  const res = { compra: okCompra, kcal: difKcal.length ? difKcal : "ok" };
-  (okCompra && !difKcal.length ? console.info : console.warn)("Autocomprobación", res);
+  const res = { compra: okCompra, kcal: difKcal.length ? difKcal : "ok", batch: difBatch.length ? difBatch : "ok",
+    saltar: difSaltar.length ? difSaltar : "ok", crear: difCrear.length ? difCrear : "ok" };
+  (okCompra && !difKcal.length && !difBatch.length && !difSaltar.length && !difCrear.length ? console.info : console.warn)("Autocomprobación", res);
   return res;
 }
 window.nvComprobar = comprobar;
@@ -267,8 +329,7 @@ function tarjetaItem(d, c, it) {
     const solo = !anadidos(d, c).find((a) => a.id === it.id).quien.includes(o);
     marca = ` <span class="chip aviso">añadido${solo ? ` · solo ${esc(D.personas[p])}` : ""}</span>`;
   } else {
-    const t = toma(d, c).items[it.i];
-    delOtro = (t.p === "ambos" || t.p === o) && !libreDe(d, c, o) ? idDe(d, c, it.i, o) : null;
+    delOtro = aplica(d, c, it.i, o) && !libreDe(d, c, o) ? idDe(d, c, it.i, o) : null;
   }
   return `<button class="tarjeta item ${r.clase}" data-ir="#item/${d}/${c}/${encodeURIComponent(it.i)}">
     <span class="rol">${rol(it.id, c)}${chipsReceta(it.id, d, c, it.i)}${marca}</span>
@@ -282,6 +343,14 @@ function tarjetaItem(d, c, it) {
 function tarjetaToma(d, c) {
   const p = persona, lib = libreDe(d, c, p), o = otra(p), libO = libreDe(d, c, o);
   const cab = `<div class="cabeza"><span class="etiqueta">${NOMBRE_TOMA[c]}</span>${interruptor()}</div>`;
+  if (lib && lib.saltada) {
+    const delOtro = libO ? (libO.saltada ? "también la salta" : `libre (${libO.nombre})`)
+      : idsToma(d, c, o).map((x) => D.recetas[x].corto).join(" + ");
+    return `<section class="toma">${cab}<button class="tarjeta item libre" data-ir="#saltar/${d}/${c}">
+      <span class="rol">Toma saltada</span><span class="nombre">Sin ${NOMBRE_TOMA[c].toLowerCase()}</span>
+      <span class="kcal">Toca para repartir la energía que falta o deshacerlo</span>
+      ${delOtro ? `<span class="otro">${esc(D.personas[o])}: ${esc(delOtro)}</span>` : ""}</button></section>`;
+  }
   if (lib) {
     const delOtro = libO ? (libO.nombre !== lib.nombre ? `libre (${libO.nombre})` : "")
       : idsToma(d, c, o).map((x) => D.recetas[x].corto).join(" + ");
@@ -291,14 +360,16 @@ function tarjetaToma(d, c) {
       ${delOtro ? `<span class="otro">${esc(D.personas[o])}: ${esc(delOtro)}</span>` : ""}</button></section>`;
   }
   const items = itemsDe(d, c, p);
-  const fijos = fijosDe(c, p);
+  const fijos = fijosLinea(c, p);
   return `<section class="toma">${cab}
     <div class="items">${items.length ? items.map((it) => tarjetaItem(d, c, it)).join("")
       : '<p class="acomp">Nada previsto.</p>'}</div>
     ${libO ? `<p class="otro-toma">${esc(D.personas[o])}: libre (${esc(libO.nombre)})</p>` : ""}
+    ${lineaSuplementos(d, c, p)}
     <div class="pie-toma"><span>${items.length ? "Total: " + kcalTxt(items.map((x) => x.id), p) : ""}</span>
       <span class="acciones"><button class="enlace" data-ir="#anadir/${d}/${c}">＋ Añadir</button>
-      <button class="enlace" data-ir="#libre/${d}/${c}">Toma libre…</button></span></div>
+      <button class="enlace" data-ir="#libre/${d}/${c}">Toma libre…</button>
+      <button class="enlace" data-ir="#saltar/${d}/${c}">Saltar…</button></span></div>
     ${fijos.length ? `<div class="fijos">Además, cada día: ${fijos.map((x) => esc(D.recetas[x].corto)).join(" · ")}</div>` : ""}
   </section>`;
 }
@@ -324,7 +395,7 @@ function estadoEnergia(k, p) {
 
 /* Tentempiés para completar el día de p según sus pautas (03_datos/pautas.json) y, al final, los del menú de la semana:
    en su orden, que quepan sin pasar del máximo, que no estén ya en el día y sin pasar de las frutas del día. */
-const frutasDia = (d, p) => ORDEN_DIA.flatMap((c) => (libreDe(d, c, p) ? [] : [...idsToma(d, c, p), ...fijosDe(c, p)]))
+const frutasDia = (d, p) => ORDEN_DIA.flatMap((c) => (libreDe(d, c, p) ? [] : [...idsToma(d, c, p), ...fijosLinea(c, p)]))
   .reduce((n, id) => n + (D.recetas[id].frutas || 0), 0);
 
 function sugerencias(d, p, k, max) {
@@ -345,6 +416,53 @@ function sugerencias(d, p, k, max) {
     }
   }
   return out;
+}
+
+/* Suplementos del día de p según lo que come (03_datos/suplementos.json) -> {toma: [{nombre, texto, aviso}]}.
+   Solo momento y motivo; la dosis, la que paute la nutri. */
+function suplementosDia(d, p) {
+  const S = D.suplementos, out = {};
+  const tomas = TOMAS.filter((c) => !libreDe(d, c, p));
+  if (!tomas.length) return out;
+  const ids = (c) => [...idsToma(d, c, p), ...fijosLinea(c, p)];
+  const suma = (lista, k) => lista.reduce((n, id) => n + (D.recetas[id].n[p][k] || 0), 0);   // n: hierro, calcio, vit C, ALA, grasa
+  const delDia = ORDEN_DIA.flatMap((c) => (libreDe(d, c, p) ? [] : ids(c)));
+  const marcas = new Set(delDia.flatMap((id) => D.recetas[id].marcas || []));
+  const principales = tomas.filter((c) => c !== "desayuno");
+  const conGrasa = principales.length ? principales.reduce((a, b) => (suma(ids(b), 4) > suma(ids(a), 4) ? b : a)) : tomas[0];
+  const conVitC = principales.length ? [...principales].sort((a, b) =>
+    (suma(ids(b), 2) >= 25) - (suma(ids(a), 2) >= 25) || suma(ids(a), 1) - suma(ids(b), 1) || suma(ids(b), 2) - suma(ids(a), 2))[0] : tomas[0];
+  const momento = (m) => (m === "desayuno" ? (tomas.includes("desayuno") ? "desayuno" : tomas[0]) : m === "hierro" ? conVitC : conGrasa);
+  const fmt = (t, v, o) => t.replace("{valor}", coma(v.toFixed(1)).replace(",0", "")).replace("{objetivo}", o);
+  const mes = Number(D.semana.fechas[d].slice(5, 7));
+  for (const x of S.lista) {
+    let texto = null, aviso = false;
+    if (x.regla === "dia_b12" && D.semana.b12[p] === d) texto = x.motivo;
+    if (x.regla === "siempre") texto = x.motivo;
+    if (x.regla === "meses" && x.meses.includes(mes)) texto = x.motivo;
+    if (x.regla === "sin" && !marcas.has(x.marca)) texto = x.motivo;
+    if (x.regla === "ala_bajo") {
+      const v = suma(delDia, 3), obj = S.ala_g[p];
+      if (v < obj) texto = fmt(x.motivo, v, obj);
+    }
+    if (x.regla === "hierro_bajo") {
+      const v = suma(delDia, 0), obj = x.hierro_mg[p];
+      if (v < obj) {
+        aviso = (x.solo_aviso || []).includes(p);
+        texto = fmt(aviso ? x.aviso : x.motivo, v, obj);
+      }
+    }
+    if (texto) (out[momento(x.momento)] = out[momento(x.momento)] || []).push({ nombre: x.nombre, texto, aviso });
+  }
+  return out;
+}
+
+function lineaSuplementos(d, c, p) {
+  const lista = (suplementosDia(d, p)[c] || []);
+  if (!lista.length) return "";
+  return `<div class="suple"><span class="suple-tit">Suplementos con esta toma</span>` + lista.map((x) =>
+    `<p class="${x.aviso ? "aviso" : ""}"><b>${x.aviso ? "Ojo" : esc(x.nombre)}</b> ${esc(x.texto)}</p>`).join("") +
+    `<span class="suple-nota">Dosis: las que os pauta la nutri.</span></div>`;
 }
 
 function tarjetaEnergia(d) {
@@ -395,7 +513,7 @@ function vistaHoy(d) {
   let aviso = "";
   if (sit === "antes") aviso = `<p class="aviso-semana">Esta semana empieza el ${D.semana.nombre_dia[dias[0]].toLowerCase()} ${fecha(dias[0])}.</p>`;
   if (sit === "despues") aviso = `<p class="aviso-semana">Esta semana ya ha pasado: falta publicar la nueva.</p>`;
-  const batch = D.semana.batch[d] ? batchDe(d) : [];
+  const batch = diasBatch().includes(d) ? batchDe(d) : [];
   if (batch.length) notas.push(`<span class="chip gris">Hoy toca batch</span> ${batch.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
   if (origen(d) !== d) notas.push(`<span class="chip aviso">Menú del ${esc(D.semana.nombre_dia[origen(d)].toLowerCase())}</span>`);
   if (Object.values(D.semana.b12).includes(d)) notas.push(`<span class="chip">B12</span> suplemento hoy`);
@@ -422,7 +540,10 @@ function tablaIngredientes(id, solo) {
 function cuerpoReceta(id, solo) {
   const r = D.recetas[id];
   const ps = solo ? [solo] : Object.keys(D.personas);
-  return `${tablaIngredientes(id, solo)}
+  const olla = r.olla ? `<h3>Para cocinar (rinde ${r.rinde} raciones${r.modo === "una_comida" ? ", una comida de los dos" : ""})</h3>
+    <ul class="olla">${r.olla.map(([a, g]) => `<li>${esc(limpio(a))}: ${cantidad(g, "")}</li>`).join("")}</ul>
+    <h3>Ración de cada uno</h3>` : "";
+  return `${olla}${tablaIngredientes(id, solo)}
     ${r.pasos.length ? `<h3>Pasos</h3><ol class="pasos">${r.pasos.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : ""}
     ${r.mejoras.length ? `<h3>Qué hemos mejorado</h3><ul class="mejoras">${r.mejoras.map((m) =>
       `<li>${esc(m.cambio)}${m.motivo ? `<br><span>${esc(m.motivo)}</span>` : ""}</li>`).join("")}</ul>` : ""}
@@ -443,17 +564,25 @@ function selectorPara(texto) {
 }
 
 function opcionesCambiar(d, c, i) {
-  const orig = toma(d, c).items[i].id;
+  const orig = originalDe(d, c, i, persona);
   const quien = para === "ambos" ? PERSONAS() : [para];
   const actual = idDe(d, c, i, para === "ambos" ? persona : para);
-  const alts = ((D.alternativas[c] || {})[actual] || [])
+  const propias = D.recetas[actual].clase === "principal" ? propiasPara(c) : [];
+  const alts = [...((D.alternativas[c] || {})[actual] || []), ...propias]
     .filter((x) => x !== orig && !quien.every((p) => idDe(d, c, i, p) === x));
   const linea = (id) => PERSONAS().map((p) =>
     `${esc(D.personas[p])}: ${Math.round(D.recetas[id].kcal[p])} kcal · ${D.recetas[id].prot[p]} g proteína`).join("<br>");
+  // Fruta que deja sin vitamina C una comida de legumbre o soja (regla "hierro sin vitamina C" de revisar_plan.py).
+  const sinVitC = (id) => c !== "desayuno" && D.recetas[actual].clase === "postre" && quien.some((p) => {
+    const otros = itemsDe(d, c, p).filter((it) => String(it.i) !== String(i)).map((it) => it.id);
+    if (!otros.some((x) => D.recetas[x].fe)) return false;
+    const vc = otros.reduce((n, x) => n + (D.recetas[x].n[p][2] || 0), 0);
+    return vc + D.recetas[id].n[p][2] < D.energia.vit_c_min && vc + D.recetas[actual].n[p][2] >= D.energia.vit_c_min;
+  });
   const op = (id, esOrig) => `<div class="alt ${esOrig ? "original" : ""}">
       <button class="alt-elegir" data-elegir="${id}">
         <b>${esOrig ? "Volver al original: " : ""}${esc(D.recetas[id].corto)}${D.recetas[id].alternativa ? ' <span class="chip gris">alternativa</span>' : ""}</b>
-        <span>${linea(id)}</span></button>
+        <span>${linea(id)}</span>${sinVitC(id) ? '<span class="aviso-vitc">Poca vitamina C para el hierro de la legumbre: mejor naranja o fresas, o añade pimiento crudo al plato.</span>' : ""}</button>
       <button class="ver" data-ir="#receta/${id}" aria-label="Ver la receta">Ver</button></div>`;
   return `${selectorPara("Cambiar para:")}<div class="opciones">
     ${quien.some((p) => cambiado(d, c, i, p)) ? op(orig, true) : ""}${alts.map((id) => op(id)).join("")}
@@ -461,7 +590,7 @@ function opcionesCambiar(d, c, i) {
 }
 
 function elegirPlato(d, c, i, id) {
-  const orig = toma(d, c).items[i].id;
+  const orig = originalDe(d, c, i, persona);
   if (para === "ambos") {
     ponerVarios([[`c:${origen(d)}:${c}:${i}`, id === orig ? "" : id],
       ...PERSONAS().filter((p) => valor(`c:${origen(d)}:${c}:${i}:${p}`)).map((p) => [`c:${origen(d)}:${c}:${i}:${p}`, ""])]);
@@ -497,10 +626,10 @@ function vistaItem(d, c, i) {
   cabecera(`<button class="flecha" data-volver="#hoy/${d}" aria-label="Volver">‹</button>`,
     NOMBRE_TOMA[c], `${D.semana.nombre_dia[d]} ${fecha(d)}`);
   if (esAnadido(i)) return fichaAnadido(d, c, String(i).slice(1));
-  const t = toma(d, c) && toma(d, c).items && toma(d, c).items[i];
-  if (!t) return `<p class="vacio">No está en el menú.</p>`;
+  const existe = esFijo(i) ? !!fijosDe(c, persona)[Number(String(i).slice(1))] : !!(toma(d, c) && toma(d, c).items && toma(d, c).items[i]);
+  if (!existe) return `<p class="vacio">No está en el menú.</p>`;
   const id = idDe(d, c, i, persona), o = otra(persona);
-  const idO = (t.p === "ambos" || t.p === o) && !libreDe(d, c, o) ? idDe(d, c, i, o) : null;
+  const idO = aplica(d, c, i, o) && !libreDe(d, c, o) ? idDe(d, c, i, o) : null;
   const distinto = idO && idO !== id;
   const r = D.recetas[id];
   return `<div class="ficha"><span class="chip gris">${rol(id, c)}</span><h2>${esc(r.nombre)}</h2>
@@ -569,6 +698,74 @@ function vistaAnadir(d, c) {
     <label class="campo">Buscar<input id="buscar" type="search" autocomplete="off" placeholder="zumo, pan, yogur…"></label>
     ${sugeridos.length ? `<h3>Para acompañar</h3><div class="opciones">${sugeridos.map(fila).join("")}</div>` : ""}
     <h3>Otros platos</h3><div class="opciones">${otros.map(fila).join("")}</div></div>`;
+}
+
+/* ---------- Saltar una toma ---------- */
+/* Dónde se recupera la energía: [tentempié, toma que se refuerza]. */
+const SALTAR_A = { desayuno: ["media_manana", "comida"], comida: ["media_tarde", "cena"], cena: ["media_tarde", "comida"] };
+/* Tentempiés con proteína y complementos para reforzar (sin huevo, para no pasar de 2 por toma: regla HUE-1). */
+const CON_PROTEINA = ["tupper_yogur_proteico", "altramuces", "edamame_vaina", "n_hummus_edamame", "nutri_yogur_cacao"];
+const REFUERZO = ["pan_integral", "hummus_casero_usuario", "postre_yogur_soja_caqui", "edamame_vaina", "naranja", "nutri_yogur_cacao", "pera", "biscote_integral"];
+
+/* Platos que se añaden en la toma c2 para que el día de p vuelva a la banda de energía: la misma previsión de kcal que
+   "＋ Añadir" y la tarjeta Energía del día (kcalDia), sin pasar del máximo ni de las frutas del día. */
+function rellenar(d, c2, p, candidatos) {
+  const obj = D.energia.kcal_dia[p], tol = D.energia.tolerancia, min = obj * (1 - tol), max = obj * (1 + tol);
+  let k = kcalDia(d, p), fr = frutasDia(d, p);
+  const ya = new Set(idsToma(d, c2, p)), ids = [];
+  for (const id of candidatos) {
+    const r = D.recetas[id];
+    if (k >= min || ids.length >= 5) break;
+    if (!r || ya.has(id) || ids.includes(id) || k + r.kcal[p] > max) continue;
+    if (r.frutas && fr + r.frutas > D.energia.frutas_max) continue;
+    ids.push(id); k += r.kcal[p]; fr += r.frutas || 0;
+  }
+  return { ids, k, ok: estadoEnergia(k, p) === "dentro" };
+}
+
+function opcionesReparto(d, c, p) {
+  const [tent, ref] = SALTAR_A[c];
+  const max = D.energia.kcal_dia[p] * (1 + D.energia.tolerancia), k = kcalDia(d, p);
+  const sug = sugerencias(d, p, k, max).map((x) => x.id);
+  const ops = [
+    [tent, `Tentempié a ${NOMBRE_TOMA[tent].toLowerCase()}`, rellenar(d, tent, p, [...CON_PROTEINA, ...sug])],
+    ...(libreDe(d, ref, p) ? [] : [[ref, `Reforzar la ${NOMBRE_TOMA[ref].toLowerCase()}`, rellenar(d, ref, p, REFUERZO)]]),
+  ];
+  return ops.filter(([, , x]) => x.ids.length).map(([c2, titulo, x]) => `<button class="opcion" data-reparto="${c2}|${p}|${x.ids.join(",")}">
+    <b>${esc(titulo)}</b><span>＋ ${x.ids.map((id) => `${esc(D.recetas[id].corto)} (${Math.round(D.recetas[id].kcal[p])} kcal)`).join(" + ")}</span>
+    <span class="${x.ok ? "ok" : "mal"}">El día queda en ${Math.round(x.k)} kcal ${x.ok ? "✓ dentro" : "· aún corto"}</span></button>`).join("");
+}
+
+function vistaSaltar(d, c) {
+  cabecera(`<button class="flecha" data-volver="#hoy/${d}" aria-label="Volver">‹</button>`,
+    `Saltar ${NOMBRE_TOMA[c].toLowerCase()}`, `${D.semana.nombre_dia[d]} ${fecha(d)}`);
+  const quien = para === "ambos" ? PERSONAS() : [para];
+  const todas = quien.every((p) => saltada(d, c, p));
+  const estado = PERSONAS().map((p) => `<b>${esc(D.personas[p])}</b>: ${saltada(d, c, p) ? "la salta" : "la toma"}`).join(" · ");
+  // Lo cocinado de batch u olla que no se come: aviso para aprovecharlo.
+  const sobras = [...new Set(PERSONAS().filter((p) => saltada(d, c, p)).flatMap((p) => {
+    const l = libreDe(d, c, p); return l && l.saltada ? itemsDe(d, c, p).map((x) => x.id) : [];
+  }).filter((id) => D.recetas[id].batch || D.recetas[id].rinde))];
+  const reparto = PERSONAS().filter((p) => saltada(d, c, p)).map((p) => {
+    const ops = opcionesReparto(d, c, p);
+    return `<h3>${esc(D.personas[p])}: ${Math.round(kcalDia(d, p))} de ${D.energia.kcal_dia[p]} kcal</h3>
+      ${estadoEnergia(kcalDia(d, p), p) === "dentro" ? '<p class="acomp">El día ya está dentro de la banda: no hace falta nada.</p>'
+        : ops ? `<p class="acomp">Elige una forma de repartir lo que falta:</p><div class="opciones">${ops}</div>`
+        : '<p class="acomp">No hay nada que quepa sin pasarse: mira la tarjeta Energía del día.</p>'}`;
+  }).join("");
+  return `<div class="ficha"><h2>Saltar ${NOMBRE_TOMA[c].toLowerCase()}</h2>
+    <p class="meta">${estado}</p>
+    <p class="acomp">Para casos puntuales: la compra no cambia y lo cocinado se aprovecha.</p>
+    ${selectorPara("Saltar para:")}
+    <div class="botones"><button class="boton ${todas ? "" : "lleno"}" data-saltar="${todas ? "" : "1"}">${todas ? "Deshacer: sí la toma" : "Saltar esta toma"}</button></div>
+    ${sobras.length ? `<p class="aviso-semana">La ración de ${esc(lista(sobras.map((id) => D.recetas[id].corto)))} queda para mañana o al congelador.</p>` : ""}
+    ${reparto}</div>`;
+}
+
+function saltar(d, c, si) {
+  const k = `c:${origen(d)}:${c}:saltar`, quien = new Set(String(valor(k) || "").split(",").filter(Boolean));
+  (para === "ambos" ? PERSONAS() : [para]).forEach((p) => (si ? quien.add(p) : quien.delete(p)));
+  poner(k, PERSONAS().filter((p) => quien.has(p)).join(","));
 }
 
 /* Intercambiar el menú completo de dos días (para los dos). */
@@ -644,6 +841,11 @@ function vistaSemana() {
         if (ids.every((x) => x && x === ids[0])) comun.push(esc(D.recetas[ids[0]].corto));
         else ps.forEach((p, k) => { if (ids[k]) solo[p].push(esc(D.recetas[ids[k]].corto)); });
       });
+      huecosFijos(c).filter((i) => ps.some((p) => cambiado(d, c, i, p))).forEach((i) => {
+        const ids = ps.map((p) => (!lib[p] && aplica(d, c, i, p) ? idDe(d, c, i, p) : null));
+        if (ids.every((x) => x && x === ids[0])) comun.push(esc(D.recetas[ids[0]].corto));
+        else ps.forEach((p, k) => { if (ids[k]) solo[p].push(esc(D.recetas[ids[k]].corto)); });
+      });
       anadidos(d, c).forEach((a) => {
         const ids = ps.map((p) => (!lib[p] && a.quien.includes(p) ? a.id : null));
         if (ids.every((x) => x)) comun.push(esc(D.recetas[a.id].corto));
@@ -661,7 +863,7 @@ function vistaSemana() {
     const fuera = Math.abs(k / obj - 1) > D.energia.tolerancia;
     return `<span class="${fuera ? "mal" : ""}">${esc(D.personas[p])} ${k}</span>`;
   }).join(" · ") + ` kcal</p>`;
-  const batch = Object.keys(D.semana.batch).map((d) => [d, batchDe(d)]).filter(([, ids]) => ids.length).map(([d, ids]) =>
+  const batch = diasBatch().map((d) => [d, batchDe(d)]).filter(([, ids]) => ids.length).map(([d, ids]) =>
     `<span class="chip gris">Batch ${esc(D.semana.nombre_dia[d].toLowerCase())}</span> ${ids.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
   const opc = [...new Set(OPCIONALES.flatMap((c) => D.semana.opcionales[c] || []))];
   return `${batch.length ? `<p class="nota-dia">${batch.join("<br>")}</p>` : ""}
@@ -671,6 +873,384 @@ function vistaSemana() {
       ${TOMAS.map((c) => `<p><i>${NOMBRE_TOMA[c]}</i> ${celda(d, c)}</p>`).join("")}${kcal(d)}</button>`).join("")}</div>
     ${opc.length ? `<p class="nota-dia" style="margin-top:12px"><span class="chip gris">Si tenéis hambre</span> ${opc.map((x) => esc(D.recetas[x].corto)).join(" · ")}</p>` : ""}
     <p class="nota-dia"><button class="enlace" data-ir="#ajustes">Sincronizar</button> <span class="estado-sync">${esc(Sync.texto())}</span></p>`;
+}
+
+/* ---------- Pestaña Batch ---------- */
+const BASES_ORDEN = ["horno", "sofrito", "legumbre", "cereal", "proteina", "salsa", "momento", "otros"];
+const pocoTiempo = (d) => !!valor(`c:batch:poco:${d}`);
+const nd = (d) => D.semana.nombre_dia[d].toLowerCase();
+const lista = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} y ${xs[xs.length - 1]}` : xs.join(""));
+
+/* Bases sumadas del batch b: {base: {alimento: {g, por: {id: g}}}} (bases de 03_datos/bases_batch.json). */
+function basesBatch(b) {
+  const out = {};
+  for (const u of usosBatch(b)) for (const [a, g] of D.recetas[u.id].raciones[u.p]) {
+    const base = (D.recetas[u.id].bb || {})[a] || "momento";
+    const x = ((out[base] = out[base] || {})[a] = out[base][a] || { g: 0, por: {} });
+    x.g += g;
+    x.por[u.id] = (x.por[u.id] || 0) + g;
+  }
+  return out;
+}
+
+/* Tareas en paralelo según el equipo: horno, dos fuegos de vitro, airfryer y microondas. Tiempos orientativos. */
+function tareasBatch(bases) {
+  const nom = (base) => Object.keys(bases[base] || {}).map((a) => limpio(a).toLowerCase());
+  const gr = (base) => Object.entries(bases[base] || {}).map(([a, x]) => `${limpio(a).toLowerCase()} ${f0(x.g)} g`);
+  const t = [];
+  if (bases.horno) t.push(["Horno", 35, `Horno a 200 °C: ${lista(gr("horno"))}. Va primero porque es lo más largo.`]);
+  if (bases.sofrito) t.push(["Fuego 1", 20, `Sofrito único en la sartén grande: ${lista(gr("sofrito"))}. Al final, repartirlo (arriba).`]);
+  if (bases.salsa) t.push(["Fuego 1", 15, `Salsas, cada una con su parte del sofrito: ${lista(nom("salsa"))}.`]);
+  if (bases.legumbre) {
+    const ls = Object.keys(bases.legumbre);
+    const secas = ls.filter((a) => /seca|seco/.test(a)), bote = ls.filter((a) => /cocid|bote/.test(a));
+    const cong = ls.filter((a) => /congelad/.test(a));
+    if (secas.length) t.push(["Fuego 2", secas.every((a) => /roja/.test(a)) ? 20 : 40,
+      `Cocer ${lista(secas.map((a) => limpio(a).toLowerCase()))}${secas.some((a) => !/lenteja/i.test(a)) ? " (en remojo desde la noche antes)" : ""}.`]);
+    if (bote.length) t.push(["Fuego 2", 5, `Escurrir y enjuagar ${lista(bote.map((a) => limpio(a).toLowerCase()))}.`]);
+    if (cong.length) t.push(["Microondas", 5, `${lista(cong.map((a) => limpio(a)))} al microondas con un poco de agua, 4-5 min.`]);
+  }
+  if (bases.cereal) t.push(["Fuego 2", 18, `Cocer ${lista(gr("cereal"))} (pesos en crudo).`]);
+  if (bases.proteina) t.push(["Airfryer", 15, `Airfryer a 200 °C: ${lista(nom("proteina"))} en dados, dorados (la soja texturizada, hidratada antes 10 min).`]);
+  const fin = {};
+  const tareas = t.map(([zona, min, texto]) => { const ini = fin[zona] || 0; fin[zona] = ini + min; return { zona, ini, min, texto }; });
+  tareas.sort((a, b) => a.ini - b.ini);
+  return { tareas, total: Math.max(0, ...Object.values(fin)) + 15 };
+}
+
+/* Dónde va cada plato: nevera si aguanta hasta el día que se come; si no, congelador u otro batch. */
+function destinos(b) {
+  const dias = D.semana.dias, por = {};
+  for (const u of usosBatch(b)) (por[u.id] = por[u.id] || new Set()).add(u.d);
+  return Object.entries(por).map(([id, ds]) => {
+    const [nevera, congela] = D.recetas[id].conserva || [3, false];
+    const lejos = [...ds].filter((d) => dias.indexOf(d) - dias.indexOf(b) > nevera);
+    const texto = !lejos.length ? `nevera (aguanta ${nevera} días)`
+      : congela ? `nevera, y la del ${lista(lejos.map(nd))} al congelador (sacarla la noche antes)`
+      : `no aguanta hasta el ${lista(lejos.map(nd))}: cocinarlo ese día o en otro batch`;
+    const r = D.recetas[id], comidas = usosBatch(b).filter((u) => u.id === id).length / PERSONAS().length;
+    const sobra = r.rinde && comidas < r.rinde / 2 ? `. Rinde para ${r.rinde / 2} comidas de los dos y aquí se usan ${comidas}: ` +
+      `lo que sobra, ${congela ? "al congelador" : `para otra comida antes de ${nevera} días`}` : "";
+    return { id, dias: [...ds], texto: texto + sobra, mal: lejos.length && !congela };
+  });
+}
+
+/* Lo que queda cada día: calentar lo del batch y añadir lo de al momento; lo que no es de batch, cocinarlo. */
+function paraTerminar(d) {
+  const out = [];
+  const conBatch = diasBatch().some((b) => tramo(b).includes(d));
+  for (const c of ["comida", "cena"]) {
+    const ids = [...new Set(PERSONAS().flatMap((p) => (libreDe(d, c, p) ? [] : idsToma(d, c, p))))]
+      .filter((id) => ["principal", "acompanamiento"].includes(D.recetas[id].clase));
+    for (const id of ids) {
+      const r = D.recetas[id];
+      if (r.batch && conBatch) {
+        const mom = Object.entries(r.bb || {}).filter(([, b]) => b === "momento").map(([a]) => limpio(a).toLowerCase());
+        out.push(`<b>${NOMBRE_TOMA[c]}:</b> calentar ${esc(r.corto)}${mom.length ? ` y añadir ${esc(lista(mom))}` : ""}`);
+      } else {
+        out.push(`<b>${NOMBRE_TOMA[c]}:</b> cocinar ${esc(r.corto)}${r.min ? ` (${r.min} min)` : ""}${r.rapida ? ' <span class="chip">rápida</span>' : ""}`);
+      }
+    }
+  }
+  return out;
+}
+
+function vistaBatch() {
+  cabecera("", "Batch", `semana del ${fecha(D.semana.dias[0])}`);
+  const dias = D.semana.dias, bs = diasBatch();
+  // 1. Platos de la semana (comida y cena), con los días de poco tiempo.
+  const platos = dias.map((d) => {
+    const filas = ["comida", "cena"].map((c) => {
+      if (PERSONAS().every((p) => libreDe(d, c, p))) return `<p><i>${NOMBRE_TOMA[c]}</i> libre</p>`;
+      const t = toma(d, c) || { items: [] };
+      return t.items.map((it, i) => ({ i, id: idDe(d, c, i, persona) })).filter((x) => D.recetas[x.id].clase === "principal")
+        .map(({ i, id }) => {
+          const r = D.recetas[id];
+          const chips = (r.batch ? ' <span class="chip gris">batch</span>' : "") + (r.rapida ? ' <span class="chip">rápida</span>' : "") +
+            (r.min ? ` <small>${r.min} min</small>` : "");
+          let prop = "";
+          if (pocoTiempo(d) && !r.batch && !r.rapida) {
+            const alts = ((D.alternativas[c] || {})[id] || []).filter((x) => D.recetas[x].rapida || D.recetas[x].batch).slice(0, 4);
+            prop = `<div class="b-prop"><span>Poco tiempo: mejor una rápida o algo del batch.</span>${alts.map((x) =>
+              `<button class="enlace" data-belegir="${d}|${c}|${i}|${x}">→ ${esc(D.recetas[x].corto)}${D.recetas[x].rapida ? " (rápida)" : " (batch)"}</button>`).join("")}</div>`;
+          }
+          return `<p><i>${NOMBRE_TOMA[c]}</i> <button class="enlace" data-ir="#item/${d}/${c}/${i}">${esc(r.corto)}</button>${chips}${prop}</p>`;
+        }).join("");
+    }).join("");
+    return `<div class="b-dia ${bs.includes(d) ? "es-batch" : ""}"><div class="b-dia-cab"><b>${D.semana.nombre_dia[d]} ${fecha(d)}</b>
+      <button class="chip-boton ${pocoTiempo(d) ? "si" : ""}" data-poco="${d}" aria-pressed="${pocoTiempo(d)}">poco tiempo</button></div>${filas}</div>`;
+  }).join("");
+  // 2. Días de batch.
+  const selector = `<div class="b-dias">${dias.map((d) => `<button class="chip-boton ${bs.includes(d) ? "si" : ""}" data-bdia="${d}"
+    aria-pressed="${bs.includes(d)}">${D.semana.nombre_dia[d].slice(0, 3)}</button>`).join("")}
+    <button class="chip-boton ${valor("c:batch:dias") === "-" ? "si" : ""}" data-bdia="-">sin batch</button></div>`;
+  // 3. El plan de cada día de batch.
+  const planes = bs.map((b) => {
+    const bases = basesBatch(b), ids = batchDe(b);
+    if (!ids.length) return `<section class="tarjeta b-plan"><h3>Batch del ${nd(b)}</h3><p class="acomp">No hay platos de batch en su tramo.</p></section>`;
+    const { tareas, total } = tareasBatch(bases);
+    const bloques = BASES_ORDEN.filter((x) => bases[x] && x !== "otros").map((x) => {
+      const filas = Object.entries(bases[x]).sort((p, q) => q[1].g - p[1].g);
+      const reparto = ids.filter((id) => filas.some(([, v]) => v.por[id])).map((id) =>
+        `${esc(D.recetas[id].corto)} ${f0(filas.reduce((n, [, v]) => n + (v.por[id] || 0), 0))} g`);
+      return `<div class="b-base"><h4>${esc(D.bases[x] || x)}</h4><p>${filas.map(([a, v]) => `${esc(limpio(a))} ${f0(v.g)} g`).join(" · ")}</p>
+        ${x === "momento" ? '<p class="acomp">No se cocina en el batch: se añade cada día.</p>'
+          : reparto.length > 1 ? `<p class="acomp">Repartir: ${reparto.join(" · ")}</p>` : ""}</div>`;
+    }).join("");
+    const orden = tareas.map((t) => `<li><span class="chip gris">${esc(t.zona)}</span> <small>min ${t.ini}-${t.ini + t.min}</small> ${esc(t.texto)}</li>`).join("");
+    const dest = destinos(b).map((x) => `<li class="${x.mal ? "mal" : ""}"><b>${esc(D.recetas[x.id].corto)}</b> (${esc(lista(x.dias.map(nd)))}): ${esc(x.texto)}</li>`).join("");
+    const fin = tramo(b).map((d) => { const l = paraTerminar(d); return l.length ? `<p><b>${D.semana.nombre_dia[d]}</b><br>${l.join("<br>")}</p>` : ""; }).join("");
+    return `<section class="tarjeta b-plan"><h3>Batch del ${nd(b)} <small>unos ${total} min · ${ids.length} plato${ids.length > 1 ? "s" : ""} para ${esc(lista(tramo(b).map(nd)))}</small></h3>
+      <p class="acomp">${ids.map((id) => esc(D.recetas[id].corto)).join(" · ")}</p>
+      <h4>Bases sumadas</h4>${bloques}
+      <h4>Orden de tareas</h4><ol class="b-tareas">${orden}<li><span class="chip gris">Final</span> Montar cada plato con su parte, tuppers y etiquetas (15 min).</li></ol>
+      <h4>Dónde va cada cosa</h4><ul class="b-dest">${dest}</ul>
+      <h4>Para terminar cada día (unos 10 min)</h4><div class="b-fin">${fin}</div></section>`;
+  }).join("");
+  const sueltos = dias.filter((d) => !bs.some((b) => tramo(b).includes(d)));
+  const sinBatch = sueltos.length ? `<section class="tarjeta b-plan"><h3>Días sin batch</h3><div class="b-fin">${sueltos.map((d) =>
+    `<p><b>${D.semana.nombre_dia[d]}</b><br>${paraTerminar(d).join("<br>")}</p>`).join("")}</div></section>` : "";
+  return `<div class="ficha"><h2>1. Platos de la semana</h2>
+    <p class="acomp">Marca los días con poco tiempo y te propone rápidas o algo del batch. Toca un plato para cambiarlo.</p>
+    <div class="b-semana">${platos}</div>
+    <h2>2. Días de batch</h2><p class="acomp">Cada batch cocina hasta el siguiente. Por defecto, los de la plantilla.</p>${selector}
+    <h2>3. El plan</h2></div>${planes}${sinBatch}`;
+}
+
+/* ---------- Pestaña Crear receta (fase 4c) ---------- */
+/* Sumas comunes: nutrientes de una lista [[alimento, g]] con la tabla por 100 g de datos.json (los mismos valores que
+   usan fichas.py y revisar_plan.sumar(), en el orden de reglas.campos), más la lactosa. */
+function sumaNut(lista) {
+  const C = D.reglas.campos, t = Object.fromEntries(C.map((c) => [c, 0]));
+  t.lactosa = 0;
+  for (const [a, g] of lista) {
+    const x = D.alimentos[a];
+    if (!x) continue;
+    C.forEach((c, i) => { t[c] += (x.n[i] * g) / 100; });
+    t.lactosa += ((x.l || 0) * g) / 100;
+  }
+  return t;
+}
+
+/* Parte de cada uno en una receta que rinde n raciones: la misma regla que la olla de fichas.py (con_olla). */
+function partes(tipo, n) {
+  const t = tipo === "desayuno" ? "desayuno" : "plato";
+  const obj = Object.fromEntries(PERSONAS().map((p) => [p, D.reglas.ficha[p][t].kcal]));
+  const tot = Object.values(obj).reduce((a, b) => a + b, 0);
+  return Object.fromEntries(PERSONAS().map((p) => [p, (2 / n) * (obj[p] / tot)]));
+}
+
+const r1 = (x) => Math.round(x * 10) / 10;
+const tipoDe = (toma) => (toma === "desayuno" ? "desayuno" : "plato");
+
+/* Receta propia -> entrada de D.recetas, como las de exportar_app.py (raciones, kcal, n, bases...). */
+function recetaPropia(slug, x) {
+  const parte = partes(tipoDe(x.toma), x.raciones);
+  const raciones = Object.fromEntries(PERSONAS().map((p) => [p, x.ing.map(([a, g]) => [a, r1(g * parte[p]), ""])]));
+  const tot = Object.fromEntries(PERSONAS().map((p) => [p, sumaNut(raciones[p])]));
+  return {
+    nombre: x.nombre, corto: x.nombre, tipo: tipoDe(x.toma), clase: "principal",
+    momentos: x.toma === "desayuno" ? ["desayuno"] : x.toma === "ambas" ? ["comida", "cena"] : [x.toma],
+    min: x.min || null, alternativa: false, batch: !!x.batch, rapida: !!x.min && x.min <= 20, propia: true,
+    frutas: x.ing.filter(([a, g]) => (D.alimentos[a] || {}).g === "fruta" && g * parte[PERSONAS()[0]] >= 50).length,
+    n: Object.fromEntries(PERSONAS().map((p) => [p, ["hierro_mg", "calcio_mg", "vit_c_mg", "ala_g", "grasa"].map((c) => r1(tot[p][c]))])),
+    marcas: [], pasos: x.pasos || [], mejoras: [],
+    raciones, kcal: Object.fromEntries(PERSONAS().map((p) => [p, r1(tot[p].kcal)])),
+    prot: Object.fromEntries(PERSONAS().map((p) => [p, Math.round(tot[p].proteina)])),
+    bb: Object.fromEntries(x.ing.map(([a]) => [a, (D.alimentos[a] || {}).b || "momento"])),
+    conserva: [3, false], olla: x.ing, rinde: x.raciones, modo: "raciones",
+  };
+}
+
+/* Recetas propias guardadas: c:receta:<slug> en la semana (se sincroniza) y una copia en este móvil (nv:propias),
+   para que sigan al cambiar de semana. Se registran en D.recetas como "propia:<slug>". */
+function propiasGuardadas() {
+  const glob = guardado.leer("nv:propias", {});
+  for (const k of Object.keys(E)) if (k.startsWith("c:receta:")) {
+    const slug = k.slice(9);
+    if (E[k].v) glob[slug] = E[k].v; else delete glob[slug];
+  }
+  return glob;
+}
+function registrarPropias() {
+  if (!D || !D.alimentos) return;
+  for (const id of Object.keys(D.recetas)) if (id.startsWith("propia:")) delete D.recetas[id];
+  const todas = propiasGuardadas();
+  for (const [slug, x] of Object.entries(todas)) {
+    if (x && x.ing && x.ing.every(([a]) => D.alimentos[a])) D.recetas["propia:" + slug] = recetaPropia(slug, x);
+  }
+  guardado.escribir("nv:propias", todas);
+}
+const propiasPara = (c) => Object.keys(D.recetas).filter((id) => id.startsWith("propia:") && D.recetas[id].momentos.includes(c));
+
+/* Recomendaciones: reglas fijas, iguales que avisos_toma() de scripts/revisar_plan.py y las de reglas_mejora.md.
+   Cada una dice qué pasa y, si se puede, cómo arreglarlo con un botón (aplicar -> nueva lista de ingredientes). */
+function avisosReceta(x) {
+  const R = D.reglas, tipo = tipoDe(x.toma), parte = partes(tipo, x.raciones), out = [];
+  const conHierro = x.toma !== "desayuno";
+  const add = (a, g, ing) => { const i = ing.findIndex(([b]) => b === a); if (i >= 0) ing[i] = [a, ing[i][1] + g]; else ing.push([a, g]); return ing; };
+  const copia = () => x.ing.map(([a, g]) => [a, g]);
+  const yaDicho = new Set();
+  const poner_ = (clave, quien, texto, aplicar, boton) => {
+    if (yaDicho.has(clave)) { out.find((o) => o.clave === clave).quien.push(quien); return; }
+    yaDicho.add(clave);
+    out.push({ clave, quien: [quien], texto, aplicar, boton });
+  };
+  for (const p of PERSONAS()) {
+    const lista = x.ing.map(([a, g]) => [a, g * parte[p]]), t = sumaNut(lista), obj = R.ficha[p][tipo];
+    const ali = (a) => D.alimentos[a] || { g: "", t: [] };
+    // No comen o no gusta (avisos_toma: "No gusta o no lo coméis").
+    for (const [a] of x.ing) if (R.no_gusta[p].includes(a))
+      poner_("no:" + a, p, `${limpio(a)}: no lo coméis o no gusta.`, () => x.ing.filter(([b]) => b !== a), "Quitar");
+    // Proteína por debajo del mínimo de la ficha (PR-1).
+    if (obj.prot_min && t.proteina < obj.prot_min) {
+      const falta = obj.prot_min - t.proteina, g = Math.ceil(falta / 0.111 / parte[p] / 10) * 10;
+      poner_("prot", p, `Falta proteína: ${Math.round(t.proteina)} g de ${obj.prot_min}. Añade tofu, legumbre, altramuces, edamame o un huevo.`,
+        () => add("Tofu", g, copia()), `＋ ${g} g de tofu`);
+    }
+    // Energía fuera de ±10 % de la ficha.
+    if (t.kcal > obj.kcal * 1.1) {
+      const aceite = x.ing.find(([a]) => a.startsWith("Aceite"));
+      const hid = x.ing.filter(([a]) => ["cereal", "tuberculo"].includes(ali(a).g)).sort((u, v) => v[1] - u[1])[0];
+      if (aceite && aceite[1] * parte[p] > 10) {
+        const g = Math.round(10 / Math.max(...Object.values(parte)));
+        poner_("aceite", p, `Se pasa de energía (${Math.round(t.kcal)} de ${obj.kcal} kcal): baja el aceite a 10 g por ración.`,
+          () => copia().map(([a, gg]) => [a, a === aceite[0] ? g : gg]), `Aceite a ${g} g`);
+      } else if (hid) {
+        const sobra = t.kcal - obj.kcal, g = Math.max(0, Math.round((hid[1] - sobra / (ali(hid[0]).n[0] / 100) / parte[p]) / 5) * 5);
+        poner_("hid", p, `Se pasa de energía (${Math.round(t.kcal)} de ${obj.kcal} kcal): baja ${limpio(hid[0]).toLowerCase()}.`,
+          () => copia().map(([a, gg]) => [a, a === hid[0] ? g : gg]), `${limpio(hid[0])} a ${g} g`);
+      } else poner_("kcal", p, `Se pasa de energía (${Math.round(t.kcal)} de ${obj.kcal} kcal).`);
+    } else if (t.kcal < obj.kcal * 0.9) {
+      const g = Math.round(40 / Math.min(...Object.values(parte)) / 10) * 10;
+      poner_("corto", p, `Se queda corto de energía (${Math.round(t.kcal)} de ${obj.kcal} kcal): añade pan o más hidrato.`,
+        () => add("Pan integral de trigo", g, copia()), `＋ ${g} g de pan integral`);
+    }
+    // Hierro de legumbre o soja sin vitamina C (FE-1).
+    const hierro = x.ing.some(([a]) => ali(a).t.includes("hierro") && ["legumbre", "soja"].includes(ali(a).g));
+    if (conHierro && hierro && t.vit_c_mg < R.vit_c_min) {
+      const g = Math.round(50 / Math.min(...Object.values(parte)) / 10) * 10;
+      poner_("vitc", p, `Hierro sin vitamina C (${Math.round(t.vit_c_mg)} mg): ${R.vit_c_sugerencia[p]}.`,
+        () => add("Pimiento rojo", g, copia()), `＋ ${g} g de pimiento rojo crudo`);
+    }
+    // Crucífera cocinada sin mostaza.
+    const tags = new Set(x.ing.flatMap(([a]) => ali(a).t));
+    if (R.mostaza.includes(p) && tags.has("sulforafano") && !tags.has("mostaza"))
+      poner_("mostaza", p, "Crucífera sin mostaza: media cucharadita de mostaza en grano sobre la crucífera ya cocinada.",
+        () => add("Mostaza en grano", 2 * x.raciones, copia()), "＋ mostaza en grano");
+    // Lactosa por toma (LAC-1).
+    if (R.lactosa_max[p] != null && t.lactosa > R.lactosa_max[p]) {
+      const cambio = { "Yogur": "Yogur de soja natural (Alcampo)", "Leche": "Bebida de soja enriquecida en calcio" };
+      poner_("lac", p, `Lactosa ${t.lactosa.toFixed(1)} g (máximo ${R.lactosa_max[p]} g por toma).`,
+        () => copia().map(([a, g]) => { const k = Object.keys(cambio).find((w) => a.startsWith(w) && (D.alimentos[a].l || 0) > 0); return [k ? cambio[k] : a, g]; }),
+        "Yogur y leche por los de soja");
+    }
+    // Como mucho 2 huevos por persona y toma (HUE-1).
+    const huevo = x.ing.find(([a]) => a === "Huevo de gallina");
+    if (huevo && (huevo[1] * parte[p]) / 55 > R.huevos_max + 0.15) {
+      const g = Math.floor((R.huevos_max * 55) / Math.max(...Object.values(parte)) / 55) * 55;
+      poner_("huevo", p, `Más de ${R.huevos_max} huevos por persona.`, () => copia().map(([a, gg]) => [a, a === huevo[0] ? g : gg]), `Huevos a ${g / 55}`);
+    }
+  }
+  return out;
+}
+
+const PLANTILLAS = {
+  "Bol de legumbre": { toma: "comida", min: 15, ing: [["Garbanzos cocidos", 240], ["Tofu ahumado", 220], ["Arroz blanco", 60], ["Pimiento rojo", 150], ["Pepino", 100], ["Aceite de oliva", 8]] },
+  "Salteado de tofu": { toma: "cena", min: 20, ing: [["Tofu", 400], ["Fideos de trigo", 90], ["Brócoli", 200], ["Zanahoria", 80], ["Salsa de soja", 20], ["Mostaza en grano", 4], ["Aceite de oliva", 10]] },
+  "Tostada completa": { toma: "desayuno", min: 10, ing: [["Pan integral de trigo", 80], ["Hummus", 60], ["Huevo de gallina", 110], ["Tomate crudo", 100]] },
+};
+const BORRADOR0 = { nombre: "", toma: "comida", min: 20, raciones: 2, batch: false, ing: [] };
+let borrador = null;
+const leerBorrador = () => (borrador = borrador || guardado.leer("nv:borrador", null) || JSON.parse(JSON.stringify(BORRADOR0)));
+const guardarBorrador = () => guardado.escribir("nv:borrador", borrador);
+
+function cantidadesAyuda(a, g) {
+  const x = D.alimentos[a] || {};
+  if (x.u) { const n = g / x.u[0]; if (n >= 0.5) return `≈ ${coma(r1(n))} ${n === 1 ? x.u[1] : x.u[2]}`; }
+  if (x.e) { const n = g / x.e[0]; if (n >= 0.25) return `≈ ${coma(r1(n))} ${n === 1 ? x.e[1] : x.e[2]} de ${fg(x.e[0])} g`; }
+  return "";
+}
+
+/* Resultado en vivo: se repinta solo esta parte al escribir, para no perder el foco del campo. */
+function resultadoCrear() {
+  const x = leerBorrador();
+  if (!x.ing.length) return '<p class="acomp">Añade ingredientes con el buscador o empieza con una plantilla.</p>';
+  const tot = sumaNut(x.ing), parte = partes(tipoDe(x.toma), x.raciones), tipo = tipoDe(x.toma);
+  const filas = PERSONAS().map((p) => {
+    const t = sumaNut(x.ing.map(([a, g]) => [a, g * parte[p]])), obj = D.reglas.ficha[p][tipo];
+    const ok = t.kcal >= obj.kcal * 0.9 && t.kcal <= obj.kcal * 1.1 && t.proteina >= obj.prot_min;
+    return `<tr><td><b>${esc(D.personas[p])}</b></td><td class="num">${Math.round(t.kcal)}</td><td class="num">${Math.round(t.proteina)}</td>
+      <td class="num">${Math.round(t.hc)}</td><td class="num">${Math.round(t.grasa)}</td><td>${ok ? '<span class="ok">✓</span>' : `<span class="mal">${obj.kcal} kcal · ${obj.prot_min} g</span>`}</td></tr>`;
+  }).join("");
+  const av = avisosReceta(x);
+  return `<table><tr><th></th><th class="num">kcal</th><th class="num">Prot</th><th class="num">HC</th><th class="num">Grasa</th><th>Objetivo</th></tr>
+    <tr><td>Todo (${x.raciones} rac.)</td><td class="num">${Math.round(tot.kcal)}</td><td class="num">${Math.round(tot.proteina)}</td>
+    <td class="num">${Math.round(tot.hc)}</td><td class="num">${Math.round(tot.grasa)}</td><td></td></tr>${filas}</table>
+    <p class="acomp">Ración de cada uno: su parte según sus kcal objetivo, como en las recetas de olla. Fibra ${Math.round(tot.fibra / x.raciones)} g ·
+      vitamina C ${Math.round(tot.vit_c_mg / x.raciones)} mg · hierro ${coma(r1(tot.hierro_mg / x.raciones))} mg por ración media.</p>
+    ${av.length ? `<h3>Recomendaciones</h3><ul class="c-avisos">${av.map((o, i) => `<li><b>${esc(o.quien.map((p) => D.personas[p]).join(" y "))}:</b> ${esc(o.texto)}
+      ${o.aplicar ? `<button class="boton" data-caplicar="${i}">${esc(o.boton)}</button>` : ""}</li>`).join("")}</ul>`
+      : '<p class="ok">✓ Sin avisos: proteína, energía, vitamina C, lactosa y huevos en orden.</p>'}`;
+}
+
+function vistaCrear() {
+  cabecera("", "Crear receta", "con lo que tengáis en casa");
+  const x = leerBorrador();
+  const filas = x.ing.map(([a, g], i) => `<li><span>${esc(limpio(a))}</span>
+    <input class="c-g" data-ci="${i}" type="number" inputmode="decimal" min="0" step="5" value="${g}" aria-label="Gramos de ${esc(a)}"> g
+    <small>${esc(cantidadesAyuda(a, g))}</small><button class="enlace" data-cquitar="${i}" aria-label="Quitar">✕</button></li>`).join("");
+  const mias = Object.keys(D.recetas).filter((id) => id.startsWith("propia:"));
+  return `<div class="ficha">
+    <h2>1. Ingredientes</h2>
+    <div class="b-dias">${Object.keys(PLANTILLAS).map((n) => `<button class="chip-boton" data-cplantilla="${esc(n)}">${esc(n)}</button>`).join("")}
+      <button class="chip-boton" data-cnueva="1">Vaciar</button></div>
+    <label class="campo">Buscar alimento<input id="buscar-ali" type="search" autocomplete="off" placeholder="garbanzos, tofu, brócoli…"></label>
+    <div id="c-resultados" class="opciones"></div>
+    <ul class="c-ing">${filas}</ul>
+    <label class="campo">Raciones que salen<input id="c-raciones" type="number" min="1" step="1" value="${x.raciones}"></label>
+    <h2>2. Resultado</h2><div id="c-res">${resultadoCrear()}</div>
+    <h2>3. Guardar</h2>
+    <label class="campo">Nombre<input id="c-nombre" type="text" value="${esc(x.nombre)}" placeholder="Bol de garbanzos con…"></label>
+    <label class="campo">Toma<select id="c-toma">${[["comida", "Comida"], ["cena", "Cena"], ["ambas", "Comida o cena"], ["desayuno", "Desayuno"]]
+      .map(([v, n]) => `<option value="${v}" ${x.toma === v ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+    <label class="campo">Minutos<input id="c-min" type="number" min="0" step="5" value="${x.min || ""}"></label>
+    <label class="c-check"><input id="c-batch" type="checkbox" ${x.batch ? "checked" : ""}> Se puede hacer en batch</label>
+    <div class="botones"><button class="boton lleno" data-cguardar="1" ${x.ing.length ? "" : "disabled"}>Guardar receta</button></div>
+    <p class="acomp" id="c-msg" role="status"></p>
+    ${mias.length ? `<h2>Mis recetas</h2><div class="opciones">${mias.map((id) => `<div class="alt"><button class="alt-elegir" data-ir="#receta/${id}">
+      <b>${esc(D.recetas[id].nombre)}</b><span>${PERSONAS().map((p) => `${esc(D.personas[p])} ${Math.round(D.recetas[id].kcal[p])} kcal · ${D.recetas[id].prot[p]} g`).join(" · ")}</span></button>
+      <button class="ver" data-ceditar="${esc(id.slice(7))}">Editar</button><button class="ver" data-cborrar="${esc(id.slice(7))}">Borrar</button></div>`).join("")}</div>
+      <p class="acomp">Ya salen en "Cambiar", en "＋ Añadir" y, si son de batch, en la pestaña Batch. Para pasarlas a la batería (el domingo):</p>
+      <div class="botones"><button class="boton" data-cexportar="1">Copiar mis recetas para Claude</button></div>
+      <textarea id="c-json" class="c-json" readonly hidden></textarea>` : ""}</div>`;
+}
+
+function repintarCrear() {
+  guardarBorrador();
+  const r = document.getElementById("c-res");
+  if (r) r.innerHTML = resultadoCrear();
+  document.querySelectorAll(".c-g").forEach((el) => {
+    const i = Number(el.dataset.ci), it = borrador.ing[i];
+    if (it) el.nextElementSibling.textContent = cantidadesAyuda(it[0], it[1]);
+  });
+  const b = document.querySelector("[data-cguardar]");
+  if (b) b.disabled = !borrador.ing.length;
+}
+
+const slugDe = (t) => norm(t).replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40) || "receta";
+
+function guardarPropia() {
+  const x = leerBorrador();
+  if (!x.nombre.trim()) { $("#c-msg").textContent = "Ponle un nombre."; return; }
+  const slug = x.slug || slugDe(x.nombre);
+  const def = { nombre: x.nombre.trim(), toma: x.toma, min: Number(x.min) || null, raciones: x.raciones, batch: !!x.batch,
+                ing: x.ing.filter(([, g]) => g > 0), creada: hoyISO() };
+  const glob = guardado.leer("nv:propias", {});
+  glob[slug] = def;
+  guardado.escribir("nv:propias", glob);
+  borrador = JSON.parse(JSON.stringify(BORRADOR0));
+  poner(`c:receta:${slug}`, def);   // se sincroniza y repinta
 }
 
 function vistaCompra() {
@@ -690,7 +1270,7 @@ function vistaCompra() {
   for (const d of D.semana.dias) for (const c of TOMAS) {
     n.c += nCambiados(d, c);
     n.a += anadidos(d, c).length;
-    if (PERSONAS().some((p) => libreDe(d, c, p))) n.l++;
+    if (PERSONAS().some((p) => libreReal(d, c, p))) n.l++;
   }
   const cambios = [n.c ? `${n.c} plato${n.c > 1 ? "s" : ""} cambiado${n.c > 1 ? "s" : ""}` : "",
     n.a ? `${n.a} añadido${n.a > 1 ? "s" : ""}` : "",
@@ -725,19 +1305,23 @@ function ruta() {
 
 function render() {
   if (!D) return;
+  registrarPropias();
   const { v, r } = ruta();
   let html;
-  if (v === "item" && D.dias[r[0]]) html = vistaItem(r[0], r[1], esAnadido(r[2]) ? r[2] : Number(r[2]));
+  if (v === "item" && D.dias[r[0]]) html = vistaItem(r[0], r[1], indice(r[2]));
   else if (v === "anadir" && D.dias[r[0]]) html = vistaAnadir(r[0], r[1]);
   else if (v === "intercambiar" && D.dias[r[0]]) html = vistaIntercambiar(r[0]);
   else if (v === "libre" && D.dias[r[0]]) html = vistaLibre(r[0], r[1]);
+  else if (v === "saltar" && D.dias[r[0]] && TOMAS.includes(r[1])) html = vistaSaltar(r[0], r[1]);
   else if (v === "receta") html = vistaReceta(r[0]);
   else if (v === "semana") html = vistaSemana();
   else if (v === "compra") html = vistaCompra();
+  else if (v === "batch") html = vistaBatch();
+  else if (v === "crear") html = vistaCrear();
   else if (v === "ajustes") html = vistaAjustes();
   else html = vistaHoy(D.dias[r[0]] ? r[0] : diaHoy());
   $("#vista").innerHTML = html;
-  const tab = v === "semana" || v === "compra" ? v : v === "ajustes" ? "" : "hoy";
+  const tab = ["semana", "compra", "batch", "crear"].includes(v) ? v : v === "ajustes" ? "" : "hoy";
   document.querySelectorAll("#tabs a").forEach((a) => a.classList.toggle("activa", a.dataset.tab === tab));
 }
 
@@ -756,7 +1340,7 @@ function cambiarDia(d) {
 }
 
 document.addEventListener("click", (ev) => {
-  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion],[data-anadir],[data-quitar],[data-intercambiar],[data-sugerir]");
+  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion],[data-anadir],[data-quitar],[data-intercambiar],[data-sugerir],[data-poco],[data-bdia],[data-belegir],[data-saltar],[data-reparto],[data-cplantilla],[data-cnueva],[data-cquitar],[data-caplicar],[data-cguardar],[data-ceditar],[data-cborrar],[data-cexportar],[data-cali]");
   if (!b || b.disabled) return;
   const ds = b.dataset;
   const { r } = ruta();
@@ -767,7 +1351,7 @@ document.addEventListener("click", (ev) => {
   else if (ds.elegir !== undefined) {
     const [d, c, i] = r;
     panel = null;
-    elegirPlato(d, c, Number(i), ds.elegir);
+    elegirPlato(d, c, indice(i), ds.elegir);
   } else if (ds.libre !== undefined) {
     const [d, c] = r;
     elegirLibre(d, c, ds.libre);
@@ -783,6 +1367,54 @@ document.addEventListener("click", (ev) => {
     if (!anadidos(r[0], r[1]).some((a) => a.id === ds.quitar)) volver("#hoy/" + r[0]);
   } else if (ds.intercambiar !== undefined) { intercambiar(r[0], ds.intercambiar); volver("#hoy/" + r[0]); }
   else if (ds.dia !== undefined) cambiarDia(ds.dia);
+  else if (ds.cplantilla !== undefined) {
+    const t = PLANTILLAS[ds.cplantilla];
+    borrador = { ...JSON.parse(JSON.stringify(BORRADOR0)), toma: t.toma, min: t.min, ing: t.ing.map(([a, g]) => [a, g]) };
+    guardarBorrador(); render();
+  } else if (ds.cnueva !== undefined) { borrador = JSON.parse(JSON.stringify(BORRADOR0)); guardarBorrador(); render(); }
+  else if (ds.cali !== undefined) {
+    const x = leerBorrador(), a = ds.cali, ali = D.alimentos[a];
+    const g = ali.u ? ali.u[0] * x.raciones / 2 : ali.g === "condimento" ? 5 : ali.g === "grasa" ? 10 : 100;
+    const i = x.ing.findIndex(([b]) => b === a);
+    if (i >= 0) x.ing[i][1] += g; else x.ing.push([a, Math.round(g)]);
+    guardarBorrador(); render();
+    const q = document.getElementById("buscar-ali"); if (q) q.focus();
+  } else if (ds.cquitar !== undefined) { leerBorrador().ing.splice(Number(ds.cquitar), 1); guardarBorrador(); render(); }
+  else if (ds.caplicar !== undefined) {
+    const o = avisosReceta(leerBorrador())[Number(ds.caplicar)];
+    if (o && o.aplicar) { borrador.ing = o.aplicar().map(([a, g]) => [a, Math.round(g)]); guardarBorrador(); render(); }
+  } else if (ds.cguardar !== undefined) guardarPropia();
+  else if (ds.ceditar !== undefined) {
+    const x = propiasGuardadas()[ds.ceditar];
+    if (x) { borrador = { ...JSON.parse(JSON.stringify(x)), slug: ds.ceditar }; guardarBorrador(); render(); window.scrollTo(0, 0); }
+  } else if (ds.cborrar !== undefined) {
+    const glob = guardado.leer("nv:propias", {});
+    delete glob[ds.cborrar];
+    guardado.escribir("nv:propias", glob);
+    poner(`c:receta:${ds.cborrar}`, "");
+  } else if (ds.cexportar !== undefined) {
+    const txt = JSON.stringify({ fecha: hoyISO(), recetas: propiasGuardadas() }, null, 1);
+    const area = $("#c-json");
+    area.value = txt; area.hidden = false; area.select();
+    (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(
+      () => { $("#c-msg").textContent = "Copiado: pégalo en el chat con Claude el domingo."; },
+      () => { $("#c-msg").textContent = "Selecciona el texto de abajo y cópialo."; });
+  } else if (ds.saltar !== undefined) saltar(r[0], r[1], !!ds.saltar);
+  else if (ds.reparto !== undefined) {
+    const [c2, p, ids] = ds.reparto.split("|");
+    ids.split(",").forEach((id) => cambiarAnadido(r[0], c2, id, true, [p]));
+    volver("#hoy/" + r[0]);
+  } else if (ds.poco !== undefined) poner(`c:batch:poco:${ds.poco}`, pocoTiempo(ds.poco) ? "" : "1");
+  else if (ds.bdia !== undefined) {
+    const ya = diasBatch();
+    const nuevo = ds.bdia === "-" ? (valor("c:batch:dias") === "-" ? "" : "-")
+      : (ya.includes(ds.bdia) ? ya.filter((x) => x !== ds.bdia) : [...ya, ds.bdia]).join(",") || "-";
+    poner("c:batch:dias", nuevo);
+  } else if (ds.belegir !== undefined) {
+    const [d, c, i, id] = ds.belegir.split("|");
+    para = "ambos";
+    elegirPlato(d, c, indice(i), id);
+  }
   else if (ds.accion === "sync-guardar" || ds.accion === "sync-quitar") {
     const quitar = ds.accion === "sync-quitar";
     const err = Sync.configurar(quitar ? "" : $("#sync-url").value, quitar ? "" : $("#sync-clave").value);
@@ -799,9 +1431,27 @@ function volver(destino) {
 
 /* Buscar al añadir: filtra sin volver a pintar (así no se pierde lo escrito). */
 document.addEventListener("input", (ev) => {
-  if (ev.target.id !== "buscar") return;
+  const el = ev.target;
+  if (el.id === "buscar-ali") {
+    const q = norm(el.value.trim()), caja = $("#c-resultados");
+    const ya = new Set(leerBorrador().ing.map(([a]) => a));
+    caja.innerHTML = q.length < 2 ? "" : Object.keys(D.alimentos).filter((a) => norm(a).includes(q) && !ya.has(a)).slice(0, 12)
+      .map((a) => `<button class="opcion" data-cali="${esc(a)}"><b>${esc(a)}</b><span>${Math.round(D.alimentos[a].n[0])} kcal y ` +
+        `${coma(r1(D.alimentos[a].n[1]))} g de proteína por 100 g</span></button>`).join("");
+    return;
+  }
+  if (el.classList.contains("c-g")) { leerBorrador().ing[Number(el.dataset.ci)][1] = Number(el.value) || 0; repintarCrear(); return; }
+  if (el.id === "c-raciones") { leerBorrador().raciones = Math.max(1, Number(el.value) || 2); repintarCrear(); return; }
+  if (el.id === "c-nombre") { leerBorrador().nombre = el.value; guardarBorrador(); return; }
+  if (el.id === "c-min") { leerBorrador().min = Number(el.value) || null; guardarBorrador(); return; }
+  if (el.id !== "buscar") return;
   const q = norm(ev.target.value.trim());
   document.querySelectorAll(".fila-anadir").forEach((b) => { b.hidden = !!q && !b.dataset.nombre.includes(q); });
+});
+
+document.addEventListener("change", (ev) => {
+  if (ev.target.id === "c-toma") { leerBorrador().toma = ev.target.value; repintarCrear(); }
+  if (ev.target.id === "c-batch") { leerBorrador().batch = ev.target.checked; guardarBorrador(); }
 });
 
 window.addEventListener("popstate", () => { panel = null; para = "ambos"; render(); });

@@ -90,6 +90,13 @@ main { max-width: 1100px; margin: 0 auto; padding: 12px 16px calc(var(--barra) +
 .pie-toma .acciones { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .ok { color: var(--verde); } .mal { color: var(--aviso); }
 .fila-anadir[hidden] { display: none; }
+.suple { border: 1px dashed var(--verde); border-radius: 12px; padding: 8px 12px; background: var(--fondo); }
+.suple-tit { display: block; font-size: 13px; font-weight: 700; color: var(--verde); text-transform: uppercase; letter-spacing: .3px; }
+.suple p { margin: 4px 0 0; font-size: 15px; line-height: 1.35; }
+.suple p b { color: var(--verde); }
+.suple p.aviso b { color: var(--aviso); }
+.suple-nota { display: block; margin-top: 4px; font-size: 12px; color: var(--suave); }
+.item.bebida .nombre { font-size: 17px; }
 
 .opcional { background: var(--gris-toma); border-style: dashed; color: var(--suave); padding: 10px 14px; }
 .opcional .etiqueta { color: var(--suave); }
@@ -188,3 +195,42 @@ ul.mejoras span { color: var(--suave); font-size: 15px; }
   .ficha { max-width: 760px; }
   .compra { columns: 2 360px; column-gap: 32px; } .compra section { break-inside: avoid; }
 }
+.aviso-vitc { display: block; margin-top: 4px; color: var(--aviso); font-size: .85em; }
+
+/* Pestaña Batch */
+.b-semana { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.b-dia { background: var(--tarjeta); border: 1px solid var(--linea); border-radius: 12px; padding: 10px 12px; }
+.b-dia.es-batch { border-color: var(--verde); }
+.b-dia p { margin: 6px 0 0; font-size: 15px; }
+.b-dia i { color: var(--suave); font-style: normal; font-size: 13px; margin-right: 4px; }
+.b-dia-cab { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.b-prop { margin-top: 4px; padding: 6px 8px; background: var(--aviso-claro); border-radius: 8px; font-size: 14px; }
+.b-prop span { display: block; color: var(--aviso); }
+.b-prop .enlace { display: block; text-align: left; }
+.chip-boton { min-height: 36px; padding: 4px 12px; border: 1px solid var(--linea); border-radius: 18px; background: var(--fondo);
+              color: var(--tinta); font: inherit; font-size: 14px; cursor: pointer; }
+.chip-boton.si { background: var(--verde); border-color: var(--verde); color: var(--fondo); }
+.b-dias { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.b-plan { margin-top: 12px; }
+.b-plan h3 small { display: block; font-weight: 400; font-size: 14px; color: var(--suave); }
+.b-plan h4 { margin: 14px 0 4px; color: var(--verde); font-size: 15px; }
+.b-base p { margin: 2px 0; }
+.b-tareas, .b-dest { padding-left: 20px; }
+.b-tareas li, .b-dest li { margin: 6px 0; }
+.b-dest li.mal { color: var(--aviso); }
+.b-fin p { margin: 8px 0; }
+
+/* Pestaña Crear receta */
+.c-ing { list-style: none; padding: 0; margin: 8px 0; }
+.c-ing li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--linea); }
+.c-ing li span { flex: 1 1 140px; }
+.c-ing input { width: 76px; min-height: 40px; padding: 4px 6px; border: 1px solid var(--linea); border-radius: 8px;
+               background: var(--fondo); color: var(--tinta); font: inherit; text-align: right; }
+.c-ing small { color: var(--suave); flex-basis: 100%; order: 5; margin-top: -4px; }
+.c-ing li .enlace { min-height: 36px; padding: 2px 10px; }
+.c-avisos { padding-left: 18px; }
+.c-avisos li { margin: 8px 0; }
+.c-avisos .boton { margin-top: 4px; }
+.c-check { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.c-json { width: 100%; min-height: 120px; font-size: 12px; }
+#tabs a { min-width: 0; }

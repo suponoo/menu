@@ -2,7 +2,7 @@
    - datos.json: primero la red (para ver la semana nueva) y, sin conexión, la última copia.
    - El resto (carcasa): copia guardada al momento y se actualiza por detrás para la próxima vez.
    - Las llamadas a otros dominios (Apps Script) no pasan por aquí. */
-const CACHE = "menu-v4";
+const CACHE = "menu-v6";
 const CARCASA = ["./", "index.html", "app.js", "sync.js", "estilo.css", "manifest.json", "datos.json",
                  "iconos/icono-192.png", "iconos/icono-512.png", "iconos/apple-touch-icon.png"];
 
