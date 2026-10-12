@@ -535,28 +535,31 @@ function lineaSuplementos(d, c, p) {
   }).join("") + `<span class="suple-nota">Dosis: confirmadlas con la nutri o el médico.</span></div>`;
 }
 
-/* Resumen de la semana en la pestaña Semana. */
-function resumenSuplementos() {
+/* Semana: los suplementos van en la tarjeta de cada día; abajo, el botón para cerrar o recalcular. */
+function supDia(d) {
   const cer = semanaCerrada();
-  if (!cer) return `<section class="tarjeta sup-semana"><span class="etiqueta">Suplementos de la semana</span>
-    <p class="acomp">Cuando tengáis la semana definida (con los cambios hechos), cerradla: la app mira lo que come cada uno y
-      reparte los suplementos en los días que tocan, sin pasar de la dosis.</p>
-    <div class="botones"><button class="boton lleno" data-supcerrar="1">Cerrar semana y ver suplementos</button></div></section>`;
-  const filas = PERSONAS().map((p) => {
-    const items = (cer.plan[p] || []).map(([id, dias, avisos, nota]) => {
+  if (!cer) return "";
+  const lineas = PERSONAS().map((p) => {
+    const ns = (cer.plan[p] || []).filter(([, dias]) => dias.some(([dd]) => dd === d)).map(([id]) => {
       const x = supDe(id);
-      if (nota) return `<li><b>${esc(x.nombre)}</b>: ${esc(nota)}</li>`;
-      if (!dias.length) return `<li class="mal"><b>${esc(x.nombre)}</b>: ${esc(avisos[0][2])}</li>`;
-      const q = x.frecuencia === "quincenal" ? " (cada 2 semanas: solo si no la tomaste la semana pasada)" : "";
-      return `<li><b>${esc(x.nombre)}</b>${x.dosis ? ` <small>${esc(x.dosis)}</small>` : ""}: ${dias.length === 7 ? "todos los días"
-        : esc(lista(dias.map(([d]) => nd(d))))}${q}</li>`;
-    }).join("");
-    return `<h3>${esc(D.personas[p])}</h3><ul class="sup-lista">${items || "<li>Nada esta semana.</li>"}</ul>`;
+      return esc(x.nombre) + (x.frecuencia === "quincenal" ? (valor(`c:sup:hecho:${id}:${p}`) ? " ✓" : " (cada 2 semanas)") : "");
+    });
+    return ns.length ? `<span class="solo"><b>${esc(D.personas[p])}:</b> ${ns.join(" · ")}</span>` : "";
   }).join("");
-  return `<section class="tarjeta sup-semana"><span class="etiqueta">Suplementos de la semana</span>
-    <p class="acomp">Calculados el ${esc(fecha2(cer.fecha))} con lo que coméis. En Hoy salen en la toma que toca.</p>${filas}
+  return lineas ? `<p class="sup-dia"><i>Suplementos</i><span>${lineas}</span></p>` : "";
+}
+
+function pieSuplementos() {
+  const cer = semanaCerrada();
+  if (!cer) return `<div class="sup-pie"><p class="acomp">Cuando tengáis la semana definida, cerradla: la app reparte los
+    suplementos de cada uno en los días que tocan, sin pasar de la dosis.</p>
+    <div class="botones"><button class="boton lleno" data-supcerrar="1">Cerrar semana y ver suplementos</button></div></div>`;
+  const notas = PERSONAS().flatMap((p) => (cer.plan[p] || []).filter(([, , , nota]) => nota)
+    .map(([id, , , nota]) => `${esc(D.personas[p])}, ${esc(supDe(id).nombre)}: ${esc(nota)}`));
+  return `<div class="sup-pie"><p class="acomp">Suplementos calculados el ${esc(fecha2(cer.fecha))}: salen en cada día y, en Hoy,
+    en la toma que toca. Dosis: confirmadlas con la nutri o el médico.${notas.length ? "<br>" + notas.join("<br>") : ""}</p>
     <div class="botones"><button class="boton" data-supcerrar="1">Recalcular con los cambios</button>
-    <button class="boton" data-supabrir="1">Reabrir la semana</button></div></section>`;
+    <button class="boton" data-supabrir="1">Reabrir la semana</button></div></div>`;
 }
 
 function tarjetaEnergia(d) {
@@ -961,11 +964,11 @@ function vistaSemana() {
     `<span class="chip gris">Batch ${esc(D.semana.nombre_dia[d].toLowerCase())}</span> ${ids.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
   const opc = [...new Set(OPCIONALES.flatMap((c) => D.semana.opcionales[c] || []))];
   return `${batch.length ? `<p class="nota-dia">${batch.join("<br>")}</p>` : ""}
-    ${resumenSuplementos()}
     <div class="semana">${dias.map((d) => `<button class="tarjeta dia ${esHoy(d) ? "hoy" : ""}" data-ir="#hoy/${d}">
       <h3>${D.semana.nombre_dia[d]} ${fecha(d)}${esHoy(d) ? ' <span class="chip">hoy</span>' : ""}${origen(d) !== d
         ? ` <span class="chip gris">menú del ${esc(D.semana.nombre_dia[origen(d)].toLowerCase())}</span>` : ""}</h3>
-      ${TOMAS.map((c) => `<p><i>${NOMBRE_TOMA[c]}</i> ${celda(d, c)}</p>`).join("")}${kcal(d)}</button>`).join("")}</div>
+      ${TOMAS.map((c) => `<p><i>${NOMBRE_TOMA[c]}</i> ${celda(d, c)}</p>`).join("")}${supDia(d)}${kcal(d)}</button>`).join("")}</div>
+    ${pieSuplementos()}
     ${opc.length ? `<p class="nota-dia" style="margin-top:12px"><span class="chip gris">Si tenéis hambre</span> ${opc.map((x) => esc(D.recetas[x].corto)).join(" · ")}</p>` : ""}
     <p class="nota-dia"><button class="enlace" data-ir="#ajustes">Sincronizar</button> <span class="estado-sync">${esc(Sync.texto())}</span></p>`;
 }

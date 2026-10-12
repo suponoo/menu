@@ -242,3 +242,5 @@ ul.mejoras span { color: var(--suave); font-size: 15px; }
 .sup-lista li { margin: 4px 0; }
 .sup-lista small, .suple small { color: var(--suave); }
 .suple .chip-boton { min-height: 30px; padding: 2px 10px; margin-left: 4px; }
+.sup-dia span .solo { display: block; }
+.sup-pie { margin-top: 12px; }
