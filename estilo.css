@@ -234,3 +234,11 @@ ul.mejoras span { color: var(--suave); font-size: 15px; }
 .c-check { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
 .c-json { width: 100%; min-height: 120px; font-size: 12px; }
 #tabs a { min-width: 0; }
+
+/* Suplementos de la semana */
+.sup-semana { margin-bottom: 12px; }
+.sup-semana h3 { margin: 10px 0 2px; font-size: 16px; }
+.sup-lista { padding-left: 18px; margin: 4px 0; }
+.sup-lista li { margin: 4px 0; }
+.sup-lista small, .suple small { color: var(--suave); }
+.suple .chip-boton { min-height: 30px; padding: 2px 10px; margin-left: 4px; }

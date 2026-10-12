@@ -152,7 +152,10 @@ const otra = (p) => PERSONAS().find((x) => x !== p);
 
 const fijosDe = (c, p) => ((D.semana.fijos[p] || {})[c] || []);
 /* Los fijos que no son bebida (lino, nuez de Brasil): van en una línea aparte y no se cambian. */
-const fijosLinea = (c, p) => fijosDe(c, p).filter((id) => D.recetas[id].clase !== "bebida");
+const fijosLinea = (d, c, p) => {
+  const fd = ((D.semana.fijos_dia || {})[p] || {})[origen(d)];
+  return fd ? fd[c] || [] : fijosDe(c, p).filter((id) => D.recetas[id].clase !== "bebida");
+};
 const idsToma = (d, c, p) => itemsDe(d, c, p).map((x) => x.id);
 
 function rol(id, c) {
@@ -169,7 +172,7 @@ function kcalDia(d, p) {
   for (const c of ORDEN_DIA) {
     const lib = libreDe(d, c, p);
     if (lib) { k += lib.kcal; continue; }
-    k += kcalDe([...idsToma(d, c, p), ...fijosLinea(c, p)], p);
+    k += kcalDe([...idsToma(d, c, p), ...fijosLinea(d, c, p)], p);
   }
   return k;
 }
@@ -190,7 +193,7 @@ function calcularCompra() {
     for (const d of D.semana.dias) {
       for (const c of ORDEN_DIA) {
         if (libreReal(d, c, p)) continue;
-        for (const id of [...idsToma(d, c, p), ...fijosLinea(c, p)]) {
+        for (const id of [...idsToma(d, c, p), ...fijosLinea(d, c, p)]) {
           for (const [a, g] of D.recetas[id].raciones[p]) {
             const k = D.compra.como[a] || a;
             tot[k] = (tot[k] || 0) + g;
@@ -254,6 +257,19 @@ function comprobar() {
     if (estadoEnergia(kcalDia(d, p), p) !== "dentro") difSaltar.push(`${p}: ${Math.round(kcalDia(d, p))} kcal`);
   }
   E = {};
+  // Suplementos: nadie pasa de max_semana; un quincenal tomado hace 7 días no vuelve a salir.
+  const difSup = [];
+  const globSup = guardado.leer("nv:sup-tomados", null);
+  for (const p of PERSONAS()) {
+    for (const s of planSuplementos(p)) if (s.dias.length > (s.x.max_semana || 7)) difSup.push(`${p} ${s.x.id}`);
+    for (const x of D.suplementos.lista.filter((y) => y.frecuencia === "quincenal")) {
+      if (!planSuplementos(p).some((s) => s.x.id === x.id && s.dias.length)) continue;
+      const hace7 = new Date(new Date(D.semana.fechas[x.dia || D.semana.dias[0]]) - 7 * 864e5).toISOString().slice(0, 10);
+      guardado.escribir("nv:sup-tomados", { [`${x.id}:${p}`]: hace7 });
+      if (planSuplementos(p).some((s) => s.x.id === x.id && s.dias.length)) difSup.push(`${p} ${x.id} quincenal`);
+    }
+  }
+  if (globSup) guardado.escribir("nv:sup-tomados", globSup); else { try { localStorage.removeItem("nv:sup-tomados"); } catch (e) { /* nada */ } }
   // Batch: la suma de las bases es la suma de los ingredientes de los platos del batch.
   const difBatch = diasBatch().filter((b) => {
     const enBases = Object.values(basesBatch(b)).flatMap((x) => Object.values(x)).reduce((n, x) => n + x.g, 0);
@@ -262,8 +278,9 @@ function comprobar() {
   });
   E = guardadoE;
   const res = { compra: okCompra, kcal: difKcal.length ? difKcal : "ok", batch: difBatch.length ? difBatch : "ok",
-    saltar: difSaltar.length ? difSaltar : "ok", crear: difCrear.length ? difCrear : "ok" };
-  (okCompra && !difKcal.length && !difBatch.length && !difSaltar.length && !difCrear.length ? console.info : console.warn)("Autocomprobación", res);
+    saltar: difSaltar.length ? difSaltar : "ok", crear: difCrear.length ? difCrear : "ok",
+    suplementos: difSup.length ? difSup : "ok" };
+  (okCompra && !difKcal.length && !difBatch.length && !difSaltar.length && !difCrear.length && !difSup.length ? console.info : console.warn)("Autocomprobación", res);
   return res;
 }
 window.nvComprobar = comprobar;
@@ -360,7 +377,7 @@ function tarjetaToma(d, c) {
       ${delOtro ? `<span class="otro">${esc(D.personas[o])}: ${esc(delOtro)}</span>` : ""}</button></section>`;
   }
   const items = itemsDe(d, c, p);
-  const fijos = fijosLinea(c, p);
+  const fijos = fijosLinea(d, c, p);
   return `<section class="toma">${cab}
     <div class="items">${items.length ? items.map((it) => tarjetaItem(d, c, it)).join("")
       : '<p class="acomp">Nada previsto.</p>'}</div>
@@ -370,7 +387,7 @@ function tarjetaToma(d, c) {
       <span class="acciones"><button class="enlace" data-ir="#anadir/${d}/${c}">＋ Añadir</button>
       <button class="enlace" data-ir="#libre/${d}/${c}">Toma libre…</button>
       <button class="enlace" data-ir="#saltar/${d}/${c}">Saltar…</button></span></div>
-    ${fijos.length ? `<div class="fijos">Además, cada día: ${fijos.map((x) => esc(D.recetas[x].corto)).join(" · ")}</div>` : ""}
+    ${fijos.length ? `<div class="fijos">Con esta toma: ${fijos.map((x) => esc(D.recetas[x].corto)).join(" · ")}</div>` : ""}
   </section>`;
 }
 
@@ -383,8 +400,10 @@ function tarjetaOpcional(d, c) {
     : ids.filter((id) => !mios.some((x) => x.id === id))
       .map((id) => `<button data-ir="#receta/${id}">${esc(D.recetas[id].corto)}</button>`).join("") +
       `<button data-ir="#anadir/${d}/${c}">＋ Añadir</button><button data-ir="#libre/${d}/${c}">Libre…</button>`;
-  return `<article class="tarjeta opcional ${mios.length && !lib ? "con-algo" : ""}"><span class="etiqueta">${NOMBRE_TOMA[c]} · opcional</span>
+  const fijos = lib ? [] : fijosLinea(d, c, persona);
+  return `<article class="tarjeta opcional ${(mios.length || fijos.length) && !lib ? "con-algo" : ""}"><span class="etiqueta">${NOMBRE_TOMA[c]} · opcional</span>
     ${lib ? "" : `<div class="items">${mios.map((it) => tarjetaItem(d, c, it)).join("")}</div>`}
+    ${fijos.length ? `<div class="fijos">Con esta toma: ${fijos.map((x) => esc(D.recetas[x].corto)).join(" · ")}</div>` : ""}
     <div class="lista">${lista}</div></article>`;
 }
 
@@ -395,7 +414,7 @@ function estadoEnergia(k, p) {
 
 /* Tentempiés para completar el día de p según sus pautas (03_datos/pautas.json) y, al final, los del menú de la semana:
    en su orden, que quepan sin pasar del máximo, que no estén ya en el día y sin pasar de las frutas del día. */
-const frutasDia = (d, p) => ORDEN_DIA.flatMap((c) => (libreDe(d, c, p) ? [] : [...idsToma(d, c, p), ...fijosLinea(c, p)]))
+const frutasDia = (d, p) => ORDEN_DIA.flatMap((c) => (libreDe(d, c, p) ? [] : [...idsToma(d, c, p), ...fijosLinea(d, c, p)]))
   .reduce((n, id) => n + (D.recetas[id].frutas || 0), 0);
 
 function sugerencias(d, p, k, max) {
@@ -418,13 +437,14 @@ function sugerencias(d, p, k, max) {
   return out;
 }
 
-/* Suplementos del día de p según lo que come (03_datos/suplementos.json) -> {toma: [{nombre, texto, aviso}]}.
-   Solo momento y motivo; la dosis, la que paute la nutri. */
-function suplementosDia(d, p) {
+/* ---------- Suplementos por semana (fase 4d) ---------- */
+/* Lo que pediría cada día para p según lo que come (03_datos/suplementos.json): {id: {c, texto, aviso}}. Es la regla
+   de antes, día a día; planSuplementos() la reparte en la semana sin pasar de max_semana. */
+function necesidadesDia(d, p) {
   const S = D.suplementos, out = {};
   const tomas = TOMAS.filter((c) => !libreDe(d, c, p));
   if (!tomas.length) return out;
-  const ids = (c) => [...idsToma(d, c, p), ...fijosLinea(c, p)];
+  const ids = (c) => [...idsToma(d, c, p), ...fijosLinea(d, c, p)];
   const suma = (lista, k) => lista.reduce((n, id) => n + (D.recetas[id].n[p][k] || 0), 0);   // n: hierro, calcio, vit C, ALA, grasa
   const delDia = ORDEN_DIA.flatMap((c) => (libreDe(d, c, p) ? [] : ids(c)));
   const marcas = new Set(delDia.flatMap((id) => D.recetas[id].marcas || []));
@@ -437,6 +457,7 @@ function suplementosDia(d, p) {
   const mes = Number(D.semana.fechas[d].slice(5, 7));
   for (const x of S.lista) {
     let texto = null, aviso = false;
+    if (x.dia && x.dia !== d) continue;   // semanal o quincenal: solo su día
     if (x.regla === "dia_b12" && D.semana.b12[p] === d) texto = x.motivo;
     if (x.regla === "siempre") texto = x.motivo;
     if (x.regla === "meses" && x.meses.includes(mes)) texto = x.motivo;
@@ -452,17 +473,90 @@ function suplementosDia(d, p) {
         texto = fmt(aviso ? x.aviso : x.motivo, v, obj);
       }
     }
-    if (texto) (out[momento(x.momento)] = out[momento(x.momento)] || []).push({ nombre: x.nombre, texto, aviso });
+    if (texto) out[x.id] = { c: momento(x.momento), texto, aviso };
   }
   return out;
 }
 
+/* Última vez que p tomó un quincenal: casilla "ya lo tomé" (c:sup:hecho:<id>:<p> = fecha, se sincroniza) y una copia
+   en este móvil (nv:sup-tomados), porque el estado de la semana se borra al pasar a la siguiente. */
+function tomadoEl(id, p) {
+  const glob = guardado.leer("nv:sup-tomados", {}), k = `${id}:${p}`, v = valor(`c:sup:hecho:${k}`);
+  if (v) glob[k] = v;
+  else if (v === "" && glob[k] >= D.semana.fechas[D.semana.dias[0]]) delete glob[k];
+  guardado.escribir("nv:sup-tomados", glob);
+  return glob[k] || null;
+}
+const diasEntre = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
+
+/* Plan de la semana de p: [{x, dias: [{d, c, texto}], avisos: [{d, c, texto}], nota}]. Las pastillas, como mucho
+   x.max_semana (los primeros días que las piden); un quincenal no sale si se tomó en los 13 días anteriores. */
+function planSuplementos(p) {
+  const nec = Object.fromEntries(D.semana.dias.map((d) => [d, necesidadesDia(d, p)]));
+  return D.suplementos.lista.map((x) => {
+    const pide = D.semana.dias.filter((d) => nec[d][x.id]).map((d) => ({ d, ...nec[d][x.id] }));
+    let nota = "", dias = pide.filter((y) => !y.aviso).slice(0, x.max_semana || 7);
+    if (x.frecuencia === "quincenal" && dias.length) {
+      const ult = tomadoEl(x.id, p), dia = D.semana.fechas[dias[0].d];
+      if (ult && ult < D.semana.fechas[D.semana.dias[0]] && diasEntre(ult, dia) < 14) {
+        nota = `No toca: la tomaste el ${fecha2(ult)}.`;
+        dias = [];
+      }
+    }
+    return { x, dias, avisos: pide.filter((y) => y.aviso), nota };
+  }).filter((s) => s.dias.length || s.avisos.length || s.nota);
+}
+const fecha2 = (iso) => { const [, m, d] = iso.split("-"); return `${Number(d)} ${MESES[Number(m) - 1]}`; };
+
+/* Semana cerrada: c:sup:cerrada = {fecha, plan: {p: [[id, [[día, toma, texto]], [[día, toma, aviso]], nota]]}}. Se fija al
+   pulsar "Cerrar semana" para que no cambie solo; "Recalcular" lo rehace con los cambios. */
+const semanaCerrada = () => valor("c:sup:cerrada") || null;
+function cerrarSemana() {
+  const plan = Object.fromEntries(PERSONAS().map((p) => [p, planSuplementos(p).map((s) =>
+    [s.x.id, s.dias.map((y) => [y.d, y.c, y.texto]), s.avisos.map((y) => [y.d, y.c, y.texto]), s.nota])]));
+  poner("c:sup:cerrada", { fecha: hoyISO(), plan });
+}
+const supDe = (id) => D.suplementos.lista.find((x) => x.id === id) || { nombre: id, dosis: "" };
+
 function lineaSuplementos(d, c, p) {
-  const lista = (suplementosDia(d, p)[c] || []);
+  const cer = semanaCerrada();
+  if (!cer) return "";
+  const lista = [];
+  for (const [id, dias, avisos] of cer.plan[p] || []) {
+    for (const [dd, cc, texto] of dias) if (dd === d && cc === c) lista.push({ id, texto, aviso: false });
+    for (const [dd, cc, texto] of avisos) if (dd === d && cc === c) lista.push({ id, texto, aviso: true });
+  }
   if (!lista.length) return "";
-  return `<div class="suple"><span class="suple-tit">Suplementos con esta toma</span>` + lista.map((x) =>
-    `<p class="${x.aviso ? "aviso" : ""}"><b>${x.aviso ? "Ojo" : esc(x.nombre)}</b> ${esc(x.texto)}</p>`).join("") +
-    `<span class="suple-nota">Dosis: las que os pauta la nutri.</span></div>`;
+  return `<div class="suple"><span class="suple-tit">Suplementos con esta toma</span>` + lista.map(({ id, texto, aviso }) => {
+    const x = supDe(id), hecho = x.frecuencia === "quincenal" && valor(`c:sup:hecho:${id}:${p}`);
+    const casilla = x.frecuencia === "quincenal" && !aviso
+      ? ` <button class="chip-boton ${hecho ? "si" : ""}" data-suphecho="${id}|${p}|${d}" aria-pressed="${!!hecho}">${hecho ? "✓ ya lo tomé" : "ya lo tomé"}</button>` : "";
+    return `<p class="${aviso ? "aviso" : ""}"><b>${aviso ? "Ojo" : esc(x.nombre)}</b>${!aviso && x.dosis ? ` <small>${esc(x.dosis)}</small>` : ""} ${esc(texto)}${casilla}</p>`;
+  }).join("") + `<span class="suple-nota">Dosis: confirmadlas con la nutri o el médico.</span></div>`;
+}
+
+/* Resumen de la semana en la pestaña Semana. */
+function resumenSuplementos() {
+  const cer = semanaCerrada();
+  if (!cer) return `<section class="tarjeta sup-semana"><span class="etiqueta">Suplementos de la semana</span>
+    <p class="acomp">Cuando tengáis la semana definida (con los cambios hechos), cerradla: la app mira lo que come cada uno y
+      reparte los suplementos en los días que tocan, sin pasar de la dosis.</p>
+    <div class="botones"><button class="boton lleno" data-supcerrar="1">Cerrar semana y ver suplementos</button></div></section>`;
+  const filas = PERSONAS().map((p) => {
+    const items = (cer.plan[p] || []).map(([id, dias, avisos, nota]) => {
+      const x = supDe(id);
+      if (nota) return `<li><b>${esc(x.nombre)}</b>: ${esc(nota)}</li>`;
+      if (!dias.length) return `<li class="mal"><b>${esc(x.nombre)}</b>: ${esc(avisos[0][2])}</li>`;
+      const q = x.frecuencia === "quincenal" ? " (cada 2 semanas: solo si no la tomaste la semana pasada)" : "";
+      return `<li><b>${esc(x.nombre)}</b>${x.dosis ? ` <small>${esc(x.dosis)}</small>` : ""}: ${dias.length === 7 ? "todos los días"
+        : esc(lista(dias.map(([d]) => nd(d))))}${q}</li>`;
+    }).join("");
+    return `<h3>${esc(D.personas[p])}</h3><ul class="sup-lista">${items || "<li>Nada esta semana.</li>"}</ul>`;
+  }).join("");
+  return `<section class="tarjeta sup-semana"><span class="etiqueta">Suplementos de la semana</span>
+    <p class="acomp">Calculados el ${esc(fecha2(cer.fecha))} con lo que coméis. En Hoy salen en la toma que toca.</p>${filas}
+    <div class="botones"><button class="boton" data-supcerrar="1">Recalcular con los cambios</button>
+    <button class="boton" data-supabrir="1">Reabrir la semana</button></div></section>`;
 }
 
 function tarjetaEnergia(d) {
@@ -519,8 +613,8 @@ function vistaHoy(d) {
   if (Object.values(D.semana.b12).includes(d)) notas.push(`<span class="chip">B12</span> suplemento hoy`);
   const tarjetas = ORDEN_DIA.map((c) => (TOMAS.includes(c) ? tarjetaToma(d, c) : tarjetaOpcional(d, c))).join("");
   return `${aviso}${notas.length ? `<p class="nota-dia">${notas.join(" &nbsp; ")}</p>` : ""}
-    ${tarjetaEnergia(d)}
     <div class="tomas">${tarjetas}</div>
+    ${tarjetaEnergia(d)}
     <p class="nota-dia" style="margin-top:16px"><button class="enlace" data-ir="#intercambiar/${d}">⇄ Intercambiar el menú de este día…</button></p>`;
 }
 
@@ -867,6 +961,7 @@ function vistaSemana() {
     `<span class="chip gris">Batch ${esc(D.semana.nombre_dia[d].toLowerCase())}</span> ${ids.map((x) => esc(D.recetas[x].corto)).join(" · ")}`);
   const opc = [...new Set(OPCIONALES.flatMap((c) => D.semana.opcionales[c] || []))];
   return `${batch.length ? `<p class="nota-dia">${batch.join("<br>")}</p>` : ""}
+    ${resumenSuplementos()}
     <div class="semana">${dias.map((d) => `<button class="tarjeta dia ${esHoy(d) ? "hoy" : ""}" data-ir="#hoy/${d}">
       <h3>${D.semana.nombre_dia[d]} ${fecha(d)}${esHoy(d) ? ' <span class="chip">hoy</span>' : ""}${origen(d) !== d
         ? ` <span class="chip gris">menú del ${esc(D.semana.nombre_dia[origen(d)].toLowerCase())}</span>` : ""}</h3>
@@ -1340,7 +1435,7 @@ function cambiarDia(d) {
 }
 
 document.addEventListener("click", (ev) => {
-  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion],[data-anadir],[data-quitar],[data-intercambiar],[data-sugerir],[data-poco],[data-bdia],[data-belegir],[data-saltar],[data-reparto],[data-cplantilla],[data-cnueva],[data-cquitar],[data-caplicar],[data-cguardar],[data-ceditar],[data-cborrar],[data-cexportar],[data-cali]");
+  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion],[data-anadir],[data-quitar],[data-intercambiar],[data-sugerir],[data-poco],[data-bdia],[data-belegir],[data-saltar],[data-reparto],[data-cplantilla],[data-cnueva],[data-cquitar],[data-caplicar],[data-cguardar],[data-ceditar],[data-cborrar],[data-cexportar],[data-cali],[data-supcerrar],[data-supabrir],[data-suphecho]");
   if (!b || b.disabled) return;
   const ds = b.dataset;
   const { r } = ruta();
@@ -1367,7 +1462,13 @@ document.addEventListener("click", (ev) => {
     if (!anadidos(r[0], r[1]).some((a) => a.id === ds.quitar)) volver("#hoy/" + r[0]);
   } else if (ds.intercambiar !== undefined) { intercambiar(r[0], ds.intercambiar); volver("#hoy/" + r[0]); }
   else if (ds.dia !== undefined) cambiarDia(ds.dia);
-  else if (ds.cplantilla !== undefined) {
+  else if (ds.supcerrar !== undefined) cerrarSemana();
+  else if (ds.supabrir !== undefined) poner("c:sup:cerrada", "");
+  else if (ds.suphecho !== undefined) {
+    const [id, p, d] = ds.suphecho.split("|"), k = `c:sup:hecho:${id}:${p}`;
+    poner(k, valor(k) ? "" : D.semana.fechas[d]);
+    tomadoEl(id, p);
+  } else if (ds.cplantilla !== undefined) {
     const t = PLANTILLAS[ds.cplantilla];
     borrador = { ...JSON.parse(JSON.stringify(BORRADOR0)), toma: t.toma, min: t.min, ing: t.ing.map(([a, g]) => [a, g]) };
     guardarBorrador(); render();
