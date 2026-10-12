@@ -89,13 +89,24 @@ function anadidos(d, c) {
     .map((k) => ({ id: k.slice(pre.length), quien: String(E[k].v).split(",") }));
 }
 
+/* Plato quitado de la toma (no toma postre, o lo cambia por uno añadido): c:<día>:<toma>:<i>:quitar = "carlos,angela". */
+const quitado = (d, c, i, p) => String(valor(`c:${origen(d)}:${c}:${i}:quitar`) || "").split(",").includes(p);
+function quitar(d, c, i, si) {
+  const k = `c:${origen(d)}:${c}:${i}:quitar`, quien = new Set(String(valor(k) || "").split(",").filter(Boolean));
+  (para === "ambos" ? PERSONAS() : [para]).forEach((p) => (si ? quien.add(p) : quien.delete(p)));
+  poner(k, PERSONAS().filter((p) => quien.has(p)).join(","));
+}
+/* Platos de la plantilla quitados para p, para poder deshacerlo desde la tarjeta: [{i, id}]. */
+const quitadosDe = (d, c, p) => [...((toma(d, c) || {}).items || []).map((it, i) => ({ i, it })), ...fijosDe(c, p).map((id, k) => ({ i: "f" + k, it: { id, p } }))]
+  .filter(({ i, it }) => (it.p === "ambos" || it.p === p) && quitado(d, c, i, p)).map(({ i }) => ({ i, id: idDe(d, c, i, p) }));
+
 /* Platos de la toma para p: [{i, id, original, p, anadido}]. */
 function itemsDe(d, c, p) {
   const t = toma(d, c);
   const base = t && t.items ? t.items.map((it, i) => ({ i, original: it.id, p: it.p, id: idDe(d, c, i, p) }))
-    .filter((it) => it.p === "ambos" || it.p === p) : [];
+    .filter((it) => (it.p === "ambos" || it.p === p) && !quitado(d, c, it.i, p)) : [];
   const bebidas = libreReal(d, c, p) ? [] : fijosDe(c, p).map((id, k) => ({ i: "f" + k, original: id, p, id: idDe(d, c, "f" + k, p), fijo: true }))
-    .filter((it) => D.recetas[it.original].clase === "bebida");
+    .filter((it) => D.recetas[it.original].clase === "bebida" && !quitado(d, c, it.i, p));
   return base.concat(bebidas, anadidos(d, c).filter((a) => a.quien.includes(p))
     .map((a) => ({ i: "+" + a.id, original: a.id, p, id: a.id, anadido: true })));
 }
@@ -382,6 +393,7 @@ function tarjetaToma(d, c) {
     <div class="items">${items.length ? items.map((it) => tarjetaItem(d, c, it)).join("")
       : '<p class="acomp">Nada previsto.</p>'}</div>
     ${libO ? `<p class="otro-toma">${esc(D.personas[o])}: libre (${esc(libO.nombre)})</p>` : ""}
+    ${quitadosDe(d, c, p).map(({ i, id }) => `<p class="otro-toma">Quitado: <button class="enlace" data-ir="#item/${d}/${c}/${i}">${esc(D.recetas[id].corto)} (volver a ponerlo)</button></p>`).join("")}
     ${lineaSuplementos(d, c, p)}
     <div class="pie-toma"><span>${items.length ? "Total: " + kcalTxt(items.map((x) => x.id), p) : ""}</span>
       <span class="acciones"><button class="enlace" data-ir="#anadir/${d}/${c}">＋ Añadir</button>
@@ -729,13 +741,21 @@ function vistaItem(d, c, i) {
   const idO = aplica(d, c, i, o) && !libreDe(d, c, o) ? idDe(d, c, i, o) : null;
   const distinto = idO && idO !== id;
   const r = D.recetas[id];
+  const quitadoPara = PERSONAS().filter((p) => aplica(d, c, i, p) && quitado(d, c, i, p));
   return `<div class="ficha"><span class="chip gris">${rol(id, c)}</span><h2>${esc(r.nombre)}</h2>
     <div class="meta">${esc(metaReceta(id))}${chipsReceta(id, d, c, i)}</div>
     ${distinto ? `<p class="otro-toma">${esc(D.personas[o])} come otra cosa:
       <button class="volver" data-ir="#receta/${idO}">${esc(D.recetas[idO].corto)} ›</button></p>` : ""}
+    ${quitadoPara.length ? `<p class="aviso-semana">Quitado para ${esc(quitadoPara.map((p) => D.personas[p]).join(" y "))}.</p>` : ""}
     <div class="botones"><button class="boton ${panel === "cambiar" ? "abierto" : ""}" data-panel="cambiar">Cambiar</button>
+      <button class="boton ${panel === "quitar" ? "abierto" : ""}" data-panel="quitar">${quitadoPara.length ? "Quitar o poner" : "Quitar"}</button>
       ${r.clase === "principal" ? `<button class="boton" data-ir="#libre/${d}/${c}">Toma libre</button>` : ""}</div>
     ${panel === "cambiar" ? opcionesCambiar(d, c, i) : ""}
+    ${panel === "quitar" ? `${selectorPara("Para:")}<div class="botones">
+      ${(para === "ambos" ? PERSONAS() : [para]).every((p) => quitado(d, c, i, p))
+        ? `<button class="boton lleno" data-quitarplato="">Volver a ponerlo</button>`
+        : `<button class="boton lleno" data-quitarplato="1">Quitar de la toma</button>`}</div>
+      <p class="acomp">Sale de la energía del día y de la compra. Para cambiarlo por otro, mejor "Cambiar" o "＋ Añadir" en la toma.</p>` : ""}
     <div class="cabeza" style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
       <h3 style="margin:0">Ingredientes</h3>${interruptor()}</div>
     ${cuerpoReceta(id, distinto ? persona : null)}</div>`;
@@ -928,7 +948,7 @@ function vistaSemana() {
   const celda = (d, c) => {
     const ps = PERSONAS(), t = toma(d, c) || { items: [] };
     const lib = Object.fromEntries(ps.map((p) => [p, libreDe(d, c, p)]));
-    const de = (p, i) => (t.items[i].p === "ambos" || t.items[i].p === p ? idDe(d, c, i, p) : null);
+    const de = (p, i) => ((t.items[i].p === "ambos" || t.items[i].p === p) && !quitado(d, c, i, p) ? idDe(d, c, i, p) : null);
     const comun = [], solo = Object.fromEntries(ps.map((p) => [p, []]));
     if (ps.every((p) => lib[p]) && ps.every((p) => lib[p].nombre === lib[ps[0]].nombre)) {
       comun.push(`<span class="chip aviso">libre</span> ${esc(lib[ps[0]].nombre)}`);
@@ -939,7 +959,7 @@ function vistaSemana() {
         else ps.forEach((p, k) => { if (ids[k]) solo[p].push(esc(D.recetas[ids[k]].corto)); });
       });
       huecosFijos(c).filter((i) => ps.some((p) => cambiado(d, c, i, p))).forEach((i) => {
-        const ids = ps.map((p) => (!lib[p] && aplica(d, c, i, p) ? idDe(d, c, i, p) : null));
+        const ids = ps.map((p) => (!lib[p] && aplica(d, c, i, p) && !quitado(d, c, i, p) ? idDe(d, c, i, p) : null));
         if (ids.every((x) => x && x === ids[0])) comun.push(esc(D.recetas[ids[0]].corto));
         else ps.forEach((p, k) => { if (ids[k]) solo[p].push(esc(D.recetas[ids[k]].corto)); });
       });
@@ -1438,7 +1458,7 @@ function cambiarDia(d) {
 }
 
 document.addEventListener("click", (ev) => {
-  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion],[data-anadir],[data-quitar],[data-intercambiar],[data-sugerir],[data-poco],[data-bdia],[data-belegir],[data-saltar],[data-reparto],[data-cplantilla],[data-cnueva],[data-cquitar],[data-caplicar],[data-cguardar],[data-ceditar],[data-cborrar],[data-cexportar],[data-cali],[data-supcerrar],[data-supabrir],[data-suphecho]");
+  const b = ev.target.closest("[data-ir],[data-persona],[data-panel],[data-para],[data-elegir],[data-libre],[data-check],[data-dia],[data-volver],[data-accion],[data-anadir],[data-quitar],[data-intercambiar],[data-sugerir],[data-poco],[data-bdia],[data-belegir],[data-saltar],[data-reparto],[data-cplantilla],[data-cnueva],[data-cquitar],[data-caplicar],[data-cguardar],[data-ceditar],[data-cborrar],[data-cexportar],[data-cali],[data-supcerrar],[data-supabrir],[data-suphecho],[data-quitarplato]");
   if (!b || b.disabled) return;
   const ds = b.dataset;
   const { r } = ruta();
@@ -1465,6 +1485,7 @@ document.addEventListener("click", (ev) => {
     if (!anadidos(r[0], r[1]).some((a) => a.id === ds.quitar)) volver("#hoy/" + r[0]);
   } else if (ds.intercambiar !== undefined) { intercambiar(r[0], ds.intercambiar); volver("#hoy/" + r[0]); }
   else if (ds.dia !== undefined) cambiarDia(ds.dia);
+  else if (ds.quitarplato !== undefined) { const [d, c, i] = r; panel = null; quitar(d, c, indice(i), !!ds.quitarplato); }
   else if (ds.supcerrar !== undefined) cerrarSemana();
   else if (ds.supabrir !== undefined) poner("c:sup:cerrada", "");
   else if (ds.suphecho !== undefined) {
